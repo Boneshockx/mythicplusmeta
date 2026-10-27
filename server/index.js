@@ -297,7 +297,7 @@ app.get('/api/meta/periods', async (req, res) => {
     const pending = (async () => {
       const [periods] = await pool.execute(
       `SELECT p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp,
-        COUNT(r.id) AS run_count, COUNT(DISTINCT LOWER(TRIM(r.dungeon))) AS dungeon_count
+        COUNT(r.id) AS run_count
        FROM weekly_periods p LEFT JOIN weekly_leaderboard_runs r
          ON r.period_id = p.period_id AND r.region = p.region
        ${where} GROUP BY p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp
@@ -308,12 +308,11 @@ app.get('/api/meta/periods', async (req, res) => {
         const period = grouped.get(Number(row.period_id)) || {
           periodId: Number(row.period_id), seasonId: Number(row.season_id), season: row.season_name,
           start: Number(row.start_timestamp), end: Number(row.end_timestamp),
-          regions: [], regionWindows: [], runCount: 0, dungeonCount: 0
+          regions: [], regionWindows: [], runCount: 0
         };
         period.regions.push(row.region);
         period.regionWindows.push({ region: row.region, start: Number(row.start_timestamp), end: Number(row.end_timestamp), runCount: Number(row.run_count) });
         period.runCount += Number(row.run_count);
-        period.dungeonCount = Math.max(period.dungeonCount, Number(row.dungeon_count));
         period.start = Math.min(period.start, Number(row.start_timestamp));
         period.end = Math.max(period.end, Number(row.end_timestamp));
         grouped.set(Number(row.period_id), period);
