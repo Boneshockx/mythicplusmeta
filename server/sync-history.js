@@ -17,6 +17,7 @@ const EXPANSION_NAMES = {
 const BLIZZARD_REGIONS = ['us', 'eu', 'tw', 'kr'];
 const REGIONS = [...BLIZZARD_REGIONS, 'cn'];
 const MAX_RIO_PAGE = 100;
+const labelsOnly = process.argv.includes('--labels-only');
 // Keep Raider.IO-only rows separate from Blizzard's connected-realm rankings.
 const RAIDER_IO_REALM_ID = 0xffffffff;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -272,6 +273,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
 try {
   const startedAt = Date.now();
   console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}.`);
+  if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
   console.log(`[history] Period labels/windows will come from Blizzard season and period data; run samples will come from Raider.IO.`);
   console.log(`[history] Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; ${requestDelay}ms pause between pages; ${rioConcurrency} concurrent dungeon scans.`);
 
@@ -284,22 +286,24 @@ try {
 
   let totalRuns = 0;
   let skippedSeasons = 0;
-  for (const region of REGIONS) {
-    const data = regionData.get(region);
-    for (const [seasonIndex, season] of data.seasons.entries()) {
-      const rioSeason = rioSeasons.get(season.id);
-      if (!rioSeason) {
-        skippedSeasons += 1;
-        console.warn(`[history] ${region.toUpperCase()}: Blizzard season ${season.id} (${season.name}) has no matching Raider.IO season metadata; periods are saved, but runs are skipped.`);
-        continue;
+  if (!labelsOnly) {
+    for (const region of REGIONS) {
+      const data = regionData.get(region);
+      for (const [seasonIndex, season] of data.seasons.entries()) {
+        const rioSeason = rioSeasons.get(season.id);
+        if (!rioSeason) {
+          skippedSeasons += 1;
+          console.warn(`[history] ${region.toUpperCase()}: Blizzard season ${season.id} (${season.name}) has no matching Raider.IO season metadata; periods are saved, but runs are skipped.`);
+          continue;
+        }
+        console.log(`[history] ${region.toUpperCase()}: season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, Raider.IO ${rioSeason.slug}.`);
+        const result = await importSeasonRegion(region, season, rioSeason, data.periods);
+        totalRuns += result.runs;
       }
-      console.log(`[history] ${region.toUpperCase()}: season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, Raider.IO ${rioSeason.slug}.`);
-      const result = await importSeasonRegion(region, season, rioSeason, data.periods);
-      totalRuns += result.runs;
     }
   }
 
-  console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
+  console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s.${labelsOnly ? ' Refreshed season names and period windows without importing runs.' : ` Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`}`);
 } catch (error) {
   console.error(`[history] Import failed: ${error.stack || error.message}`);
   process.exitCode = 1;
