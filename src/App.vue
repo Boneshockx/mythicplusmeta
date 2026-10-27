@@ -84,8 +84,6 @@ const historyExpansion = ref('Midnight');
 const weeklyLoading = ref(false);
 const weeklyError = ref('');
 const historyTooltip = ref(null);
-let historyZoomTimer;
-let historyScrollFrame;
 const loading = ref(false);
 const error = ref('');
 const activeSection = ref('overview');
@@ -328,31 +326,14 @@ function zoomHistoryAtPointer(event) {
   if (event.type === 'mouseenter') track.dataset.historyZoomDone = 'true';
   const targetBounds = target.getBoundingClientRect();
   const pointerX = event.type === 'focus' ? targetBounds.left + targetBounds.width / 2 : event.clientX;
-  clearTimeout(historyZoomTimer);
-  cancelAnimationFrame(historyScrollFrame);
-  historyZoomTimer = window.setTimeout(() => {
-    const targetRect = target.getBoundingClientRect();
-    const trackRect = track.getBoundingClientRect();
-    const segmentLeft = targetRect.left - trackRect.left + track.scrollLeft;
-    const pointerOffset = pointerX - trackRect.left;
-    const destination = segmentLeft + targetRect.width / 2 - pointerOffset;
-    const start = track.scrollLeft;
-    const change = destination - start;
-    const startedAt = performance.now();
-    const duration = 145;
-    const animate = (now) => {
-      const progress = Math.min(1, (now - startedAt) / duration);
-      const eased = 1 - (1 - progress) ** 3;
-      track.scrollLeft = start + change * eased;
-      if (progress < 1) historyScrollFrame = requestAnimationFrame(animate);
-    };
-    historyScrollFrame = requestAnimationFrame(animate);
-  }, 125);
+  const targetRect = target.getBoundingClientRect();
+  const trackRect = track.getBoundingClientRect();
+  const segmentLeft = targetRect.left - trackRect.left + track.scrollLeft;
+  const pointerOffset = pointerX - trackRect.left;
+  track.scrollLeft = segmentLeft + targetRect.width / 2 - pointerOffset;
 }
 function resetHistoryZoom(event) {
   delete event.currentTarget.dataset.historyZoomDone;
-  clearTimeout(historyZoomTimer);
-  cancelAnimationFrame(historyScrollFrame);
 }
 function moveHistoryTooltip(event) {
   if (!historyTooltip.value) return;
