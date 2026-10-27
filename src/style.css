@@ -183,8 +183,13 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .fastest-run-panel .panel-heading h2 small { color: #d7e5f2; font: 700 18px 'DM Sans'; }
 .fastest-run-panel .panel-heading p { color: #a8e23f; font-size: 13px; }
 .fastest-run-panel>small { line-height: 1.5; }
+.period-feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 0 14px; }
+.period-feature-grid > .panel { min-width: 0; margin: 0; }
 @media(max-width: 900px) {
   .dashboard-highlights { grid-template-columns: 1fr; }
+}
+@media(max-width: 1000px) {
+  .period-feature-grid { grid-template-columns: 1fr; }
 }
 @media(max-width: 600px) {
   .dashboard-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
