@@ -335,10 +335,13 @@ function zoomHistoryFromTrack(event) {
   const track = event.currentTarget;
   const segments = [...track.children].filter((element) => element.classList.contains('history-bar-segment'));
   if (!segments.length) return;
-  const hoveredSegment = event.target.closest?.('.history-bar-segment');
-  const target = hoveredSegment && track.contains(hoveredSegment) ? hoveredSegment : segments.reduce((closest, segment) => {
+  const pointTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.history-bar-segment');
+  const eventTarget = event.target.closest?.('.history-bar-segment');
+  const hoveredSegment = [pointTarget, eventTarget].find((segment) => segment && track.contains(segment));
+  const target = hoveredSegment || segments.reduce((closest, segment) => {
     const bounds = segment.getBoundingClientRect();
-    const distance = Math.abs(bounds.left + bounds.width / 2 - event.clientX);
+    const distance = event.clientX < bounds.left ? bounds.left - event.clientX
+      : event.clientX > bounds.right ? event.clientX - bounds.right : 0;
     return !closest || distance < closest.distance ? { segment, distance } : closest;
   }, null)?.segment;
   if (target) zoomHistoryAtPointer(event, target, true);
