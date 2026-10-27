@@ -291,7 +291,7 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .diversity-bar-track{display:flex;width:100%;height:32px;gap:0;overflow-x:auto;overflow-y:hidden;border-radius:4px;background:#273548;scrollbar-width:none;-ms-overflow-style:none;overscroll-behavior-x:contain;touch-action:pan-x;transition:height .12s ease}
 .diversity-bar-track::-webkit-scrollbar{display:none}
 .diversity-bar-track:hover,.diversity-bar-track:focus-within{height:44px}
-.diversity-bar-segment{position:relative;display:flex;flex:0 0 auto;align-items:center;min-width:1px;height:100%;overflow:hidden;border-radius:3px;outline:1px solid #26364b;outline-offset:-1px;color:#101722;container-type:inline-size;cursor:help;transition:min-width .12s ease,filter .12s ease}
+.diversity-bar-segment{position:relative;display:flex;flex:0 0 auto;align-items:center;min-width:1px;height:100%;overflow:hidden;border-radius:3px;outline:1px solid #26364b;outline-offset:-1px;color:#101722;container-type:inline-size;cursor:help;transition:filter .12s ease}
 .diversity-bar-track:hover .diversity-bar-segment,.diversity-bar-track:focus-within .diversity-bar-segment{min-width:64px;outline-color:#26364b}
 .diversity-bar-segment:hover,.diversity-bar-segment:focus-visible{z-index:2;filter:brightness(1.16);outline:2px solid #f5f8ff;outline-offset:-2px}
 .diversity-bar-segment>small{position:absolute;top:3px;right:3px;left:3px;display:none;overflow:hidden;padding:2px 3px;border-radius:3px;background:rgba(11,20,32,.72);color:#f4f7fb;font-size:10px;font-weight:700;line-height:1.2;text-align:center;text-shadow:0 1px 2px #000;white-space:nowrap;text-overflow:clip}
