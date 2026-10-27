@@ -21,6 +21,8 @@ const dungeonTimersMs = new Map([
 ]);
 const normalizeDungeonName = (value) => String(value || 'Unknown dungeon').toLocaleLowerCase('en').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 const seasonFirstMplusPeriod = new Map([[18, 1077]]);
+const periodsResponseCache = new Map();
+const periodsResponseCacheTtlMs = 15_000;
 const keyDifficultyMultiplier = 1.15;
 function calculateMetaRanking(compositions) {
   if (!compositions.length) return [];
@@ -267,41 +269,67 @@ async function getSeasonWeekNumbers(seasonId) {
 app.get('/api/meta/periods', async (req, res) => {
   try {
     const region = req.query.region || 'all';
+    const cached = periodsResponseCache.get(region);
+    if (cached?.data && cached.expiresAt > Date.now()) return res.json(cached.data);
+    if (cached?.pending) return res.json(await cached.pending);
+
     const params = region === 'all' ? [] : [region];
     const where = region === 'all' ? '' : 'WHERE p.region = ?';
-    const [periods] = await pool.execute(
+    const pending = (async () => {
+      const [periods] = await pool.execute(
       `SELECT p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp,
         COUNT(r.id) AS run_count, COUNT(DISTINCT LOWER(TRIM(r.dungeon))) AS dungeon_count
        FROM weekly_periods p LEFT JOIN weekly_leaderboard_runs r
          ON r.period_id = p.period_id AND r.region = p.region
        ${where} GROUP BY p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp
        ORDER BY p.start_timestamp DESC, p.period_id DESC`, params
-    );
-    const grouped = new Map();
-    for (const row of periods) {
-      const period = grouped.get(row.period_id) || {
-        periodId: row.period_id, seasonId: row.season_id, season: row.season_name,
-        start: Number(row.start_timestamp), end: Number(row.end_timestamp),
-        regions: [], regionWindows: [], runCount: 0, dungeonCount: 0
-      };
-      period.regions.push(row.region);
-      period.regionWindows.push({ region: row.region, start: Number(row.start_timestamp), end: Number(row.end_timestamp), runCount: Number(row.run_count) });
-      period.runCount += Number(row.run_count);
-      period.dungeonCount = Math.max(period.dungeonCount, Number(row.dungeon_count));
-      period.start = Math.min(period.start, Number(row.start_timestamp));
-      period.end = Math.max(period.end, Number(row.end_timestamp));
-      grouped.set(row.period_id, period);
-    }
-    const weekNumbers = new Map();
-    for (const seasonId of new Set([...grouped.values()].map((period) => Number(period.seasonId)))) {
-      for (const [periodId, week] of await getSeasonWeekNumbers(seasonId)) weekNumbers.set(periodId, week);
-    }
-    for (const period of grouped.values()) {
-      period.weekNumber = weekNumbers.get(Number(period.periodId)) || null;
-      period.offSeason = !weekNumbers.has(Number(period.periodId));
-    }
-    res.json([...grouped.values()]);
+      );
+      const grouped = new Map();
+      for (const row of periods) {
+        const period = grouped.get(Number(row.period_id)) || {
+          periodId: Number(row.period_id), seasonId: Number(row.season_id), season: row.season_name,
+          start: Number(row.start_timestamp), end: Number(row.end_timestamp),
+          regions: [], regionWindows: [], runCount: 0, dungeonCount: 0
+        };
+        period.regions.push(row.region);
+        period.regionWindows.push({ region: row.region, start: Number(row.start_timestamp), end: Number(row.end_timestamp), runCount: Number(row.run_count) });
+        period.runCount += Number(row.run_count);
+        period.dungeonCount = Math.max(period.dungeonCount, Number(row.dungeon_count));
+        period.start = Math.min(period.start, Number(row.start_timestamp));
+        period.end = Math.max(period.end, Number(row.end_timestamp));
+        grouped.set(Number(row.period_id), period);
+      }
+
+      // Reuse the run counts from the main query to derive week numbers. The old
+      // path issued another full run aggregation for every season on the page.
+      const bySeason = new Map();
+      for (const period of grouped.values()) {
+        const seasonPeriods = bySeason.get(period.seasonId) || [];
+        seasonPeriods.push(period);
+        bySeason.set(period.seasonId, seasonPeriods);
+      }
+      const weekNumbers = new Map();
+      for (const [seasonId, seasonPeriods] of bySeason) {
+        seasonPeriods.sort((a, b) => a.start - b.start || a.periodId - b.periodId);
+        const firstRun = seasonPeriods.find((period) => period.runCount > 0);
+        const firstPeriodId = firstRun?.periodId ?? seasonFirstMplusPeriod.get(seasonId);
+        const activePeriods = firstPeriodId
+          ? seasonPeriods.filter((period) => period.periodId >= firstPeriodId)
+          : seasonPeriods;
+        activePeriods.forEach((period, index) => weekNumbers.set(period.periodId, index + 1));
+      }
+      for (const period of grouped.values()) {
+        period.weekNumber = weekNumbers.get(period.periodId) || null;
+        period.offSeason = !weekNumbers.has(period.periodId);
+      }
+      return [...grouped.values()];
+    })();
+    periodsResponseCache.set(region, { pending });
+    const result = await pending;
+    periodsResponseCache.set(region, { data: result, expiresAt: Date.now() + periodsResponseCacheTtlMs });
+    res.json(result);
   } catch (error) {
+    periodsResponseCache.delete(req.query.region || 'all');
     res.status(503).json({ error: 'Could not load weekly periods.', detail: error.message });
   }
 });
