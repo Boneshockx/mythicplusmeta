@@ -461,4 +461,5 @@ if (process.env.NODE_ENV === 'production') {
   app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-app.listen(port, '127.0.0.1', () => console.log(`MythicPlusMeta API listening at http://127.0.0.1:${port}`));
+const host = process.env.HOST || '0.0.0.0';
+app.listen(port, host, () => console.log(`MythicPlusMeta API listening at http://${host}:${port}`));
