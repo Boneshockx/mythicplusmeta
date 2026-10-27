@@ -14,12 +14,19 @@ try {
   );
   syncId = result.insertId;
   let imported = 0;
+  console.log(`[sync] Starting ${season} sync for ${regions.join(', ')}; up to ${pages} pages per region.`);
 
   for (const region of regions) {
+    let regionPages = 0;
+    let regionImported = 0;
     for (let page = 0; page < pages; page += 1) {
       const runs = await getTopRuns({ region, season, page });
-      if (!runs.length) break;
+      if (!runs.length) {
+        console.log(`[sync] ${region}: no results on page ${page + 1}; moving to the next region.`);
+        break;
+      }
 
+      let pageImported = 0;
       for (const run of runs) {
         const item = normalizeRun(run, region, season);
         if (!item) continue;
@@ -33,11 +40,17 @@ try {
             item.completedAt ? new Date(item.completedAt.replace('Z', '+00:00')) : null,
             item.score, JSON.stringify(item.roster), JSON.stringify(item.payload)]
         );
-        imported += saved.affectedRows > 0 ? 1 : 0;
+        const changed = saved.affectedRows > 0 ? 1 : 0;
+        imported += changed;
+        pageImported += changed;
       }
+      regionPages += 1;
+      regionImported += pageImported;
+      console.log(`[sync] ${region}: page ${page + 1}/${pages} complete (${runs.length} received, ${pageImported} inserted or updated).`);
       // Keep requests sequential and leave room under anonymous rate limits.
       await new Promise((resolve) => setTimeout(resolve, 1200));
     }
+    console.log(`[sync] ${region}: finished ${regionPages} page(s), ${regionImported} row(s) inserted or updated.`);
   }
 
   await pool.execute('UPDATE sync_runs SET finished_at=NOW(), status=?, imported_count=? WHERE id=?', ['success', imported, syncId]);
