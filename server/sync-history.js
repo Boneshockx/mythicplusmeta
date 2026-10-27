@@ -99,6 +99,11 @@ async function loadBlizzardRegion(region, rioSeasons) {
   const indexedSeasons = [...(seasonIndex?.seasons || [])].sort((a, b) => idFrom(a) - idFrom(b));
   const periods = new Map();
   const seasons = [];
+  const [cachedPeriodRows] = await pool.execute(
+    'SELECT period_id, season_id, season_name, start_timestamp, end_timestamp FROM weekly_periods WHERE region = ?',
+    [region]
+  );
+  const cachedPeriods = new Map(cachedPeriodRows.map((row) => [Number(row.period_id), row]));
 
   for (const [index, item] of indexedSeasons.entries()) {
     const seasonId = idFrom(item);
@@ -115,10 +120,29 @@ async function loadBlizzardRegion(region, rioSeasons) {
     seasons.push({ id: seasonId, name: seasonName, periodIds });
     console.log(`[history] ${region.toUpperCase()}: ${seasonName} (Blizzard season ${seasonId}) has ${periodIds.length} period(s).`);
 
+    let reusedPeriods = 0;
+    let fetchedPeriods = 0;
     for (const [periodIndex, periodId] of periodIds.entries()) {
+      const cached = cachedPeriods.get(periodId);
+      if (cached && Number(cached.start_timestamp) > 0 && Number(cached.end_timestamp) > 0) {
+        const window = { id: periodId, seasonId, seasonName, start: Number(cached.start_timestamp), end: Number(cached.end_timestamp) };
+        periods.set(periodId, window);
+        if (Number(cached.season_id) !== seasonId || cached.season_name !== seasonName) {
+          await pool.execute(
+            'UPDATE weekly_periods SET season_id = ?, season_name = ? WHERE period_id = ? AND region = ?',
+            [seasonId, seasonName, periodId, region]
+          );
+        }
+        reusedPeriods += 1;
+        if ((periodIndex + 1) % 25 === 0 || periodIndex + 1 === periodIds.length) {
+          console.log(`[history] ${region.toUpperCase()} ${seasonName}: reused ${reusedPeriods}/${periodIndex + 1} stored period windows; fetched ${fetchedPeriods} missing window(s).`);
+        }
+        continue;
+      }
       let period;
       try {
         period = await blizzardData(region, `/data/wow/mythic-keystone/period/${periodId}`);
+        fetchedPeriods += 1;
       } catch (error) {
         console.warn(`[history] ${region.toUpperCase()} ${seasonName}: period ${periodId} failed after retries (${error.message}); skipping this period and continuing.`);
         // Still correct the label on an already imported period without replacing
@@ -127,9 +151,7 @@ async function loadBlizzardRegion(region, rioSeasons) {
           `UPDATE weekly_periods SET season_id = ?, season_name = ? WHERE period_id = ? AND region = ?`,
           [seasonId, seasonName, periodId, region]
         );
-        if ((periodIndex + 1) % 10 === 0 || periodIndex + 1 === periodIds.length) {
-          console.log(`[history] ${region.toUpperCase()} ${seasonName}: checked ${periodIndex + 1}/${periodIds.length} period windows (including skipped failures).`);
-        }
+        if ((periodIndex + 1) % 25 === 0 || periodIndex + 1 === periodIds.length) console.log(`[history] ${region.toUpperCase()} ${seasonName}: processed ${periodIndex + 1}/${periodIds.length} period windows; reused ${reusedPeriods}, fetched ${fetchedPeriods}.`);
         if (blizzardDelay) await sleep(blizzardDelay);
         continue;
       }
@@ -145,9 +167,7 @@ async function loadBlizzardRegion(region, rioSeasons) {
       } else {
         console.warn(`[history] ${region.toUpperCase()}: period ${periodId} has no timestamps; skipping its period record.`);
       }
-      if ((periodIndex + 1) % 10 === 0 || periodIndex + 1 === periodIds.length) {
-        console.log(`[history] ${region.toUpperCase()} ${seasonName}: fetched ${periodIndex + 1}/${periodIds.length} period windows.`);
-      }
+      if ((periodIndex + 1) % 25 === 0 || periodIndex + 1 === periodIds.length) console.log(`[history] ${region.toUpperCase()} ${seasonName}: processed ${periodIndex + 1}/${periodIds.length} period windows; reused ${reusedPeriods}, fetched ${fetchedPeriods}.`);
       if (blizzardDelay) await sleep(blizzardDelay);
     }
   }
