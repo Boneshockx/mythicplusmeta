@@ -13,14 +13,28 @@ let failed = false;
 for (const [index, job] of jobs.entries()) {
   console.log(`[daily-sync] Starting step ${index + 1}/${jobs.length}: ${job.name}.`);
   const success = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(here, job.file)], { stdio: 'inherit', env: process.env });
+    // Explicitly relay child output so scheduled-task terminals can stream it.
+    const child = spawn(process.execPath, [path.join(here, job.file)], {
+      stdio: ['inherit', 'pipe', 'pipe'],
+      env: process.env,
+      windowsHide: true
+    });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    child.stdout?.on('data', (chunk) => process.stdout.write(chunk));
+    child.stderr?.on('data', (chunk) => process.stderr.write(chunk));
     child.once('error', (error) => {
       console.error(`[daily-sync] Could not start ${job.name}: ${error.message}`);
-      resolve(false);
+      finish(false);
     });
     child.once('exit', (code, signal) => {
       if (signal) console.error(`[daily-sync] ${job.name} stopped by signal ${signal}.`);
-      resolve(code === 0);
+      finish(code === 0);
     });
   });
   if (!success) {
