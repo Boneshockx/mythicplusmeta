@@ -44,6 +44,7 @@ function dungeonIdFor(name) {
 }
 
 export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, periodId: requestedPeriodId, sampleLimit = 2000 } = {}) {
+  const startedAt = Date.now();
   const seasonId = Number(requestedSeasonId || args.get('season') || process.env.BLIZZARD_SEASON_ID || 18);
   const defaultSlug = ({ 18: 'season-mn-2', 17: 'season-mn-1' })[seasonId] || 'current';
   const seasonSlug = args.get('season-slug') || process.env.RIO_SEASON || defaultSlug;
@@ -56,11 +57,19 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
   );
   const dungeons = dungeonRows.map((row) => row.dungeon).filter(Boolean);
   if (!dungeons.length) throw new Error(`No season ${seasonId} dungeons are available locally to query Raider.IO CN.`);
+  console.log(`CN Raider.IO: starting season ${seasonId} (${seasonSlug}); ${dungeons.length} dungeon(s), up to ${pageCount} page(s) each, ${requestDelay}ms request delay.`);
 
   for (const dungeon of dungeons) {
+    const dungeonStartedAt = Date.now();
+    let pagesLoaded = 0;
     for (let page = 0; page < pageCount; page += 1) {
+      console.log(`CN Raider.IO ${dungeon}: requesting page ${page + 1}/${pageCount}.`);
       const entries = await getTopRuns({ region: 'cn', season: seasonSlug, dungeon, page });
-      if (!entries.length) break;
+      if (!entries.length) {
+        console.log(`CN Raider.IO ${dungeon}: page ${page + 1} had no results; stopping this dungeon.`);
+        break;
+      }
+      pagesLoaded += 1;
       for (const entry of entries) {
         const run = normalizeRun(entry, 'cn', seasonSlug);
         if (!run || !run.completedAt || run.roster.length !== 5) continue;
@@ -68,9 +77,10 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
         if (!window) continue;
         runsById.set(run.sourceRunId, { ...run, window, score: Number(run.score || run.level || 0) });
       }
-      console.log(`CN Raider.IO ${dungeon}: loaded page ${page + 1}/${pageCount} (${runsById.size} unique usable runs).`);
+      console.log(`CN Raider.IO ${dungeon}: loaded page ${page + 1}/${pageCount} (${entries.length} runs received; ${runsById.size} unique usable runs total).`);
       if (page + 1 < pageCount && requestDelay) await new Promise((resolve) => setTimeout(resolve, requestDelay));
     }
+    console.log(`CN Raider.IO ${dungeon}: finished ${pagesLoaded} page(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
     if (requestDelay) await new Promise((resolve) => setTimeout(resolve, requestDelay));
   }
 
@@ -94,6 +104,7 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
   }
 
   const referenceWindow = knownWindows.find((window) => window.start <= Date.now() && window.end > Date.now()) || knownWindows[0];
+  console.log(`CN Raider.IO: saving ${seasonPeriodIds.size} period(s), with ${runsById.size} unique runs available.`);
   for (const periodId of [...seasonPeriodIds].sort((a, b) => a - b)) {
     const period = grouped.get(periodId) || { runs: [] };
     const sampledRuns = [...period.runs]
@@ -139,5 +150,5 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
     }
     console.log(`CN period ${periodId}: saved ${inserts.length} Raider.IO runs (${new Date(periodWindow.start).toISOString()} – ${new Date(periodWindow.end).toISOString()}).`);
   }
-  console.log(`CN: imported ${runsById.size} unique Raider.IO runs across ${seasonPeriodIds.size} season periods (max ${sampleLimit} runs per period).`);
+  console.log(`CN: imported ${runsById.size} unique Raider.IO runs across ${seasonPeriodIds.size} season periods (max ${sampleLimit} runs per period) in ${Math.round((Date.now() - startedAt) / 1000)}s.`);
 }

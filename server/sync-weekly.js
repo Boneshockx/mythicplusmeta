@@ -49,6 +49,8 @@ function rosterFor(group) {
 }
 
 async function syncRegion(region) {
+  const regionStartedAt = Date.now();
+  console.log(`${region.toUpperCase()}: loading realm, dungeon, period, and season indexes from Blizzard.`);
   const [realmIndex, dungeonIndex, periodIndex, seasonIndex] = await Promise.all([
     blizzardData(region, '/data/wow/connected-realm/index'),
     blizzardData(region, '/data/wow/mythic-keystone/dungeon/index'),
@@ -78,17 +80,25 @@ async function syncRegion(region) {
 
   const realmIds = [...new Set((realmIndex?.connected_realms || []).map(idFrom).filter(Boolean))];
   const dungeonNames = new Map((dungeonIndex?.dungeons || []).map((dungeon) => [idFrom(dungeon), dungeon.name]));
+  console.log(`${region.toUpperCase()}: indexes loaded; season ${seasonName}, ${periodIds.length} period(s), ${realmIds.length} connected realms.`);
   const leaderboardIndexes = new Map();
   let failedBoards = 0;
   let inserted = 0;
   let checked = 0;
   for (const periodId of periodIds) {
+    console.log(`${region.toUpperCase()} period ${periodId}: loading period details from Blizzard.`);
     const period = await blizzardData(region, `/data/wow/mythic-keystone/period/${periodId}`);
-    if (!period?.start_timestamp || !period?.end_timestamp) continue;
+    if (!period?.start_timestamp || !period?.end_timestamp) {
+      console.log(`${region.toUpperCase()} period ${periodId}: Blizzard returned no period timestamps; skipping.`);
+      continue;
+    }
     // Respect the selected season's official start/end if Blizzard returns them.
     if (seasonData?.periods?.length) {
       const seasonPeriodIds = new Set(seasonData.periods.map(idFrom));
-      if (!seasonPeriodIds.has(periodId)) continue;
+      if (!seasonPeriodIds.has(periodId)) {
+        console.log(`${region.toUpperCase()} period ${periodId}: not part of ${seasonName}; skipping.`);
+        continue;
+      }
     }
     await pool.execute(
       `INSERT INTO weekly_periods (period_id, region, season_id, season_name, start_timestamp, end_timestamp)
@@ -171,17 +181,24 @@ async function syncRegion(region) {
     inserted += candidates.length;
     console.log(`${region.toUpperCase()} period ${periodId}: saved ${candidates.length} top runs by Blizzard score (limit ${sampleLimit}).`);
   }
-  console.log(`${region.toUpperCase()}: visited ${checked} realm/dungeon boards; skipped ${failedBoards}; saved ${inserted} leaderboard entries.`);
+  console.log(`${region.toUpperCase()}: visited ${checked} realm/dungeon boards; skipped ${failedBoards}; saved ${inserted} leaderboard entries in ${Math.round((Date.now() - regionStartedAt) / 1000)}s.`);
 }
 
 try {
-  for (const region of regions.filter((item) => item !== 'cn')) await syncRegion(region);
+  const startedAt = Date.now();
+  const blizzardRegions = regions.filter((item) => item !== 'cn');
   const importChina = regions.includes('cn') || (!args.has('regions') && process.env.BLIZZARD_INCLUDE_CN !== 'false');
-  if (importChina) await syncChinaWeekly(pool, {
-    seasonId: requestedSeason,
-    periodId: requestedPeriod ? Number(requestedPeriod) : null,
-    sampleLimit
-  });
+  console.log(`[weekly-sync] Starting; Blizzard regions: ${blizzardRegions.join(', ') || 'none'}; CN Raider.IO import: ${importChina ? 'enabled' : 'disabled'}; concurrency ${concurrency}; sample limit ${sampleLimit}.`);
+  for (const region of blizzardRegions) await syncRegion(region);
+  if (importChina) {
+    console.log('[weekly-sync] Starting CN Raider.IO import.');
+    await syncChinaWeekly(pool, {
+      seasonId: requestedSeason,
+      periodId: requestedPeriod ? Number(requestedPeriod) : null,
+      sampleLimit
+    });
+  }
+  console.log(`[weekly-sync] Finished successfully in ${Math.round((Date.now() - startedAt) / 1000)}s.`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

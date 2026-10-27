@@ -1,17 +1,30 @@
 const API_ROOT = 'https://raider.io/api/v1';
 
 async function fetchJson(url) {
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (response.status === 429) {
-    const waitSeconds = Number(response.headers.get('retry-after') || 60);
-    throw new Error(`Raider.IO rate limit reached; retry after ${waitSeconds}s.`);
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (response.status === 429) {
+      const waitSeconds = Math.max(1, Number(response.headers.get('retry-after') || 60));
+      if (attempt === 6) throw new Error(`Raider.IO rate limit persisted after ${attempt} attempts.`);
+      console.warn(`Raider.IO rate limit reached; retrying in ${waitSeconds}s (attempt ${attempt}/6).`);
+      await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+      continue;
+    }
+    if (!response.ok) throw new Error(`Raider.IO returned HTTP ${response.status}.`);
+    return response.json();
   }
-  if (!response.ok) throw new Error(`Raider.IO returned HTTP ${response.status}.`);
-  return response.json();
+  throw new Error('Raider.IO request did not complete.');
 }
 
 export async function getRegionPeriods() {
   return fetchJson(`${API_ROOT}/periods`);
+}
+
+export async function getMythicPlusStaticData(expansionId) {
+  const url = new URL(`${API_ROOT}/mythic-plus/static-data`);
+  url.searchParams.set('expansion_id', String(expansionId));
+  if (process.env.RIO_API_KEY) url.searchParams.set('access_key', process.env.RIO_API_KEY);
+  return fetchJson(url);
 }
 
 export async function getTopRuns({ region, season, dungeon = 'all', page = 0 }) {

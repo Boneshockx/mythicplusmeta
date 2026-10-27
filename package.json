@@ -9,7 +9,8 @@
     "start": "node server/index.js",
     "db:setup": "node server/apply-schema.js",
     "sync": "node server/sync.js",
-    "sync:weekly": "node server/sync-weekly.js"
+    "sync:weekly": "node server/sync-weekly.js",
+    "sync:history": "node server/sync-history.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
