@@ -21,8 +21,10 @@ const labelsOnly = process.argv.includes('--labels-only');
 // Keep Raider.IO-only rows separate from Blizzard's connected-realm rankings.
 const RAIDER_IO_REALM_ID = 0xffffffff;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-const requestDelay = Math.max(0, Number(process.env.RIO_HISTORY_REQUEST_DELAY_MS || 250));
-const rioConcurrency = Math.max(1, Math.min(5, Number(process.env.RIO_HISTORY_CONCURRENCY || 3)));
+const configuredRequestDelay = Number(process.env.RIO_HISTORY_REQUEST_DELAY_MS);
+const requestDelay = Number.isFinite(configuredRequestDelay) && configuredRequestDelay > 0 ? configuredRequestDelay : 0;
+const configuredConcurrency = Number(process.env.RIO_HISTORY_CONCURRENCY);
+const rioConcurrency = Math.max(1, Math.min(5, Number.isFinite(configuredConcurrency) && configuredConcurrency > 0 ? configuredConcurrency : 5));
 const blizzardDelay = Math.max(0, Number(process.env.BLIZZARD_REQUEST_DELAY_MS || 150));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const idFrom = (item) => Number(item?.id || item?.key?.href?.match(/\/(\d+)(?:\?.*)?$/)?.[1] || item?.href?.match(/\/(\d+)(?:\?.*)?$/)?.[1]) || 0;
@@ -380,7 +382,7 @@ try {
   if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
   else await ensureHistoryCheckpointTable();
   console.log(`[history] Period labels/windows will come from Blizzard season and period data; run samples will come from Raider.IO.`);
-  console.log(`[history] Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; ${requestDelay}ms pause between pages; ${rioConcurrency} concurrent dungeon scans.`);
+  console.log(`[history] Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; global header-aware request pacing (300ms minimum by default), ${requestDelay}ms extra per-worker pause, and ${rioConcurrency} concurrent dungeon scans.`);
 
   const rioSeasons = await loadRaiderIoSeasons();
   const regionData = new Map();

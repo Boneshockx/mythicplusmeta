@@ -1,9 +1,55 @@
 const API_ROOT = 'https://raider.io/api/v1';
+const configuredInterval = Number(process.env.RIO_MIN_REQUEST_INTERVAL_MS);
+const BASE_REQUEST_INTERVAL_MS = Math.max(50, Number.isFinite(configuredInterval) && configuredInterval > 0 ? configuredInterval : 300);
+let requestIntervalMs = BASE_REQUEST_INTERVAL_MS;
+let nextRequestAt = 0;
+let rateLimitBlockedUntil = 0;
+let rateLimitWindowResetAt = 0;
+let lowestRemainingInWindow = Infinity;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForRequestSlot() {
+  while (true) {
+    const now = Date.now();
+    const slotAt = Math.max(now, nextRequestAt, rateLimitBlockedUntil);
+    nextRequestAt = slotAt + requestIntervalMs;
+    if (slotAt > now) await sleep(slotAt - now);
+    if (Date.now() >= rateLimitBlockedUntil) return;
+  }
+}
+
+function observeRateLimit(response) {
+  const remaining = Number(response.headers.get('x-ratelimit-remaining'));
+  const resetSeconds = Number(response.headers.get('x-ratelimit-reset'));
+  if (!Number.isFinite(remaining) || !Number.isFinite(resetSeconds) || resetSeconds <= 0) return;
+
+  const resetAt = resetSeconds * 1000;
+  if (resetAt > rateLimitWindowResetAt) {
+    rateLimitWindowResetAt = resetAt;
+    lowestRemainingInWindow = remaining;
+  } else if (resetAt === rateLimitWindowResetAt) {
+    lowestRemainingInWindow = Math.min(lowestRemainingInWindow, remaining);
+  } else {
+    return;
+  }
+
+  if (lowestRemainingInWindow <= 0) {
+    rateLimitBlockedUntil = Math.max(rateLimitBlockedUntil, resetAt);
+    return;
+  }
+
+  const remainingWindowMs = Math.max(0, resetAt - Date.now());
+  // Pace against the remaining budget with a 20% cushion. The baseline is
+  // deliberately conservative when Raider.IO omits its rate-limit headers.
+  requestIntervalMs = Math.max(50, Math.ceil(remainingWindowMs / lowestRemainingInWindow * 1.2));
+}
 
 async function fetchJson(url) {
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     let response;
     try {
+      await waitForRequestSlot();
       response = await fetch(url, { headers: { Accept: 'application/json' } });
     } catch (error) {
       if (attempt === 6) throw new Error(`Raider.IO request failed after ${attempt} attempts: ${error.message}`);
@@ -12,11 +58,13 @@ async function fetchJson(url) {
       await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     }
+    observeRateLimit(response);
     if (response.status === 429) {
       const waitSeconds = Math.max(1, Number(response.headers.get('retry-after') || 60));
+      rateLimitBlockedUntil = Math.max(rateLimitBlockedUntil, Date.now() + waitSeconds * 1000);
       if (attempt === 6) throw new Error(`Raider.IO rate limit persisted after ${attempt} attempts.`);
       console.warn(`Raider.IO rate limit reached; retrying in ${waitSeconds}s (attempt ${attempt}/6).`);
-      await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+      await sleep(waitSeconds * 1000);
       continue;
     }
     if (response.status >= 500 && attempt < 6) {
