@@ -35,11 +35,6 @@ const classColors = {
   Rogue: '#fff468', Shaman: '#0070dd', Warlock: '#8788ee', Warrior: '#c69b6d'
 };
 const meleeSpecs = new Set(['Arms Warrior', 'Fury Warrior', 'Feral Druid', 'Enhancement Shaman', 'Windwalker Monk', 'Brewmaster Monk', 'Mistweaver Monk', 'Havoc Demon Hunter', 'Vengeance Demon Hunter', 'Devourer Demon Hunter', 'Subtlety Rogue', 'Outlaw Rogue', 'Assassination Rogue', 'Retribution Paladin', 'Blood Death Knight', 'Frost Death Knight', 'Unholy Death Knight', 'Survival Hunter']);
-const historyClassColors = {
-  'Death Knight': '#f5224e', 'Demon Hunter': '#d83df2', Druid: '#ff7900', Evoker: '#00d6a4',
-  Hunter: '#b9eb55', Mage: '#39d8ff', Monk: '#00f59a', Paladin: '#ff7ab8', Priest: '#e8ecf6',
-  Rogue: '#fff04a', Shaman: '#087cf0', Warlock: '#a552ed', Warrior: '#d7a36e'
-};
 const region = ref('all');
 const data = ref(null);
 const dashboardDungeons = computed(() => {
@@ -121,7 +116,7 @@ const historyBars = computed(() => {
   if (!rows.length) return { bars: [] };
   const colorFor = (key) => {
     const className = Object.keys(classColors).find((name) => key.endsWith(` ${name}`));
-    return historyClassColors[className] || '#68778b';
+    return classColors[className] || '#68778b';
   };
   const bars = [...rows].sort((a, b) => b.start - a.start).map((row) => {
     const specs = row.specs.filter((spec) => spec.share > 0);
@@ -173,7 +168,7 @@ const weeklyDiversityRows = computed(() => [...(weeklyData.value?.diversity || [
     segments: specs.map((spec) => {
       const className = Object.keys(classKeys).find((name) => spec.key.endsWith(` ${name}`));
       const specName = className ? spec.key.slice(0, -(className.length + 1)) : spec.key;
-      return { key: spec.key, spec: specName, className, share: spec.share, isTopFive: topSpecs.has(spec.key), color: historyClassColors[className] || '#68778b' };
+      return { key: spec.key, spec: specName, className, share: spec.share, isTopFive: topSpecs.has(spec.key), color: classColors[className] || '#68778b' };
     })
   };
 }));
@@ -196,7 +191,7 @@ const makeRoleRepresentation = (specs = []) => {
       ...group,
       pickRate: totalSlots ? group.appearances / totalSlots * 100 : 0,
       segments: [...group.specs].sort((a, b) => Number(b.appearances || 0) - Number(a.appearances || 0)).map((spec) => ({
-        spec: spec.spec, className: spec.class, roleLabel: role, color: historyClassColors[spec.class] || '#68778b',
+        spec: spec.spec, className: spec.class, roleLabel: role, color: classColors[spec.class] || '#68778b',
         share: totalSlots ? Number(spec.appearances || 0) / totalSlots * 100 : 0,
         roleShare: group.appearances ? Number(spec.appearances || 0) / group.appearances * 100 : 0,
         isTopFive: topSpecs.has(`${spec.spec} ${spec.class}`)
