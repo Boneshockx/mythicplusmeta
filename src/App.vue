@@ -319,9 +319,9 @@ function showHistoryTooltip(event, segment) {
     top: Math.max(8, Math.min(window.innerHeight - 104, y + 14))
   };
 }
-function zoomHistoryAtPointer(event, target = event.currentTarget) {
+function zoomHistoryAtPointer(event, target = event.currentTarget, fromTrack = false) {
   const track = target.parentElement;
-  if (event.type === 'mouseenter' && track.dataset.historyZoomDone === 'true') return;
+  if (!fromTrack && event.type === 'mouseenter' && track.dataset.historyZoomDone === 'true') return;
   if (event.type === 'mouseenter') track.dataset.historyZoomDone = 'true';
   const targetBounds = target.getBoundingClientRect();
   const pointerX = event.type === 'focus' ? targetBounds.left + targetBounds.width / 2 : event.clientX;
@@ -333,14 +333,15 @@ function zoomHistoryAtPointer(event, target = event.currentTarget) {
 }
 function zoomHistoryFromTrack(event) {
   const track = event.currentTarget;
-  if (event.target !== track) return;
   const segments = [...track.children].filter((element) => element.classList.contains('history-bar-segment'));
   if (!segments.length) return;
-  const nearest = segments.reduce((closest, segment) => {
-    const distance = Math.abs(segment.getBoundingClientRect().left + segment.getBoundingClientRect().width / 2 - event.clientX);
+  const hoveredSegment = event.target.closest?.('.history-bar-segment');
+  const target = hoveredSegment && track.contains(hoveredSegment) ? hoveredSegment : segments.reduce((closest, segment) => {
+    const bounds = segment.getBoundingClientRect();
+    const distance = Math.abs(bounds.left + bounds.width / 2 - event.clientX);
     return !closest || distance < closest.distance ? { segment, distance } : closest;
-  }, null);
-  zoomHistoryAtPointer(event, nearest.segment);
+  }, null)?.segment;
+  if (target) zoomHistoryAtPointer(event, target, true);
 }
 function resetHistoryZoom(event) {
   delete event.currentTarget.dataset.historyZoomDone;
