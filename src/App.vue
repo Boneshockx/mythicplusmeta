@@ -326,7 +326,8 @@ function zoomHistoryAtPointer(event, target = event.currentTarget) {
   const targetRect = target.getBoundingClientRect();
   const trackRect = track.getBoundingClientRect();
   const segmentLeft = targetRect.left - trackRect.left + track.scrollLeft;
-  track.scrollLeft = segmentLeft + targetRect.width / 2 - track.clientWidth / 2;
+  const pointerX = event.type === 'focus' ? targetRect.left + targetRect.width / 2 : event.clientX;
+  track.scrollLeft = segmentLeft + targetRect.width / 2 - (pointerX - trackRect.left);
 }
 function zoomHistoryFromTrack(event) {
   const track = event.currentTarget;
