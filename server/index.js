@@ -458,7 +458,7 @@ app.get('/api/meta/history', async (req, res) => {
 
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(dist));
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+  app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
 const host = process.env.HOST || '0.0.0.0';
