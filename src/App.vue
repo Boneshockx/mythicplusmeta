@@ -67,6 +67,8 @@ const regionWindowsByProgress = computed(() => [...(data.value?.regionWindows ||
   return progress(b) - progress(a);
 }));
 const periodRows = ref([]);
+const periodExpansion = ref('Midnight');
+const periodExpansions = ['Midnight', 'The War Within', 'Dragonflight', 'Shadowlands', 'Battle for Azeroth', 'Legion'];
 const currentPeriodId = ref(null);
 const weeklyData = ref(null);
 const historyRows = ref([]);
@@ -424,7 +426,7 @@ async function loadPeriods() {
   weeklyLoading.value = true;
   weeklyError.value = '';
   try {
-    const response = await fetch('/api/meta/periods');
+    const response = await fetch(`/api/meta/periods?expansion=${encodeURIComponent(periodExpansion.value)}`);
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Could not load weekly periods.');
     periodRows.value = result;
@@ -460,6 +462,7 @@ function navigatePage(page, periodId = null) {
   currentPage.value = page;
   document.title = page === 'methodology' ? 'How we calculate the meta | MythicPlusMeta' : page === 'periods' ? 'Weekly periods | MythicPlusMeta' : page === 'history' ? 'Meta history | MythicPlusMeta' : page === 'week' ? `Period ${periodId} | MythicPlusMeta` : 'MythicPlusMeta';
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (page === 'dashboard') load();
   if (page === 'periods') loadPeriods();
   if (page === 'history') loadHistory();
   if (page === 'week') loadWeek(periodId);
@@ -481,13 +484,13 @@ function syncPageWithHistory() {
   const path = routePath();
   currentPage.value = path === '/methodology' ? 'methodology' : path === '/periods' ? 'periods' : path === '/history' ? 'history' : path.startsWith('/period/') ? 'week' : 'dashboard';
   document.title = currentPage.value === 'methodology' ? 'How we calculate the meta | MythicPlusMeta' : currentPage.value === 'periods' ? 'Weekly periods | MythicPlusMeta' : currentPage.value === 'history' ? 'Meta history | MythicPlusMeta' : currentPage.value === 'week' ? `Period ${path.split('/').pop()} | MythicPlusMeta` : 'MythicPlusMeta';
+  if (currentPage.value === 'dashboard') load();
   if (currentPage.value === 'periods') loadPeriods();
   if (currentPage.value === 'history') loadHistory();
   if (currentPage.value === 'week') loadWeek(path.split('/').pop());
 }
-watch(region, load);
+watch(region, () => { if (currentPage.value === 'dashboard') load(); });
 onMounted(() => {
-  load();
   syncPageWithHistory();
   window.addEventListener('popstate', syncPageWithHistory);
 });
@@ -509,6 +512,7 @@ onMounted(() => {
       <div class="kicker"><span class="status-dot"></span> RESET-BY-RESET ARCHIVE</div>
       <h1>Weekly <span>periods</span></h1>
       <p class="weekly-lead">Each row is a World of Warcraft Mythic Keystone leaderboard period imported from Blizzard. Select a week to explore its top compositions, spec representation, diversity and dungeon highs.</p>
+      <div class="filters"><label>Expansion<select v-model="periodExpansion" @change="loadPeriods"><option value="all">All expansions</option><option v-for="expansion in periodExpansions" :key="expansion" :value="expansion">{{ expansion }}</option></select></label></div>
       <div v-if="weeklyError" class="notice error">{{ weeklyError }}</div><div v-else-if="weeklyLoading" class="notice">Loading weekly periods…</div>
       <div v-else-if="!periodRows.length" class="notice"><b>No weekly periods have been imported yet.</b><span>Add Blizzard OAuth credentials to `.env`, then run `npm run sync:weekly` to capture the latest period.</span></div>
       <div v-else class="table-scroll weekly-table-wrap"><table class="weekly-table"><thead><tr><th>Period</th><th>Week</th><th>Season</th><th>Top keys</th><th>Dungeons</th><th>Regional reset windows (UTC)</th></tr></thead><tbody>

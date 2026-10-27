@@ -21,6 +21,7 @@ const dungeonTimersMs = new Map([
 ]);
 const normalizeDungeonName = (value) => String(value || 'Unknown dungeon').toLocaleLowerCase('en').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 const seasonFirstMplusPeriod = new Map([[18, 1077]]);
+const supportedExpansions = ['Legion', 'Battle for Azeroth', 'Shadowlands', 'Dragonflight', 'The War Within', 'Midnight'];
 const periodsResponseCache = new Map();
 const periodsResponseCacheTtlMs = 15_000;
 const keyDifficultyMultiplier = 1.15;
@@ -269,12 +270,20 @@ async function getSeasonWeekNumbers(seasonId) {
 app.get('/api/meta/periods', async (req, res) => {
   try {
     const region = req.query.region || 'all';
-    const cached = periodsResponseCache.get(region);
+    const expansion = req.query.expansion || 'all';
+    if (expansion !== 'all' && !supportedExpansions.includes(expansion)) {
+      return res.status(400).json({ error: 'Unknown expansion.' });
+    }
+    const cacheKey = `${region}:${expansion}`;
+    const cached = periodsResponseCache.get(cacheKey);
     if (cached?.data && cached.expiresAt > Date.now()) return res.json(cached.data);
     if (cached?.pending) return res.json(await cached.pending);
 
-    const params = region === 'all' ? [] : [region];
-    const where = region === 'all' ? '' : 'WHERE p.region = ?';
+    const filters = [];
+    const params = [];
+    if (region !== 'all') { filters.push('p.region = ?'); params.push(region); }
+    if (expansion !== 'all') { filters.push('p.season_name LIKE ?'); params.push(`${expansion}%`); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
     const pending = (async () => {
       const [periods] = await pool.execute(
       `SELECT p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp,
@@ -324,12 +333,12 @@ app.get('/api/meta/periods', async (req, res) => {
       }
       return [...grouped.values()];
     })();
-    periodsResponseCache.set(region, { pending });
+    periodsResponseCache.set(cacheKey, { pending });
     const result = await pending;
-    periodsResponseCache.set(region, { data: result, expiresAt: Date.now() + periodsResponseCacheTtlMs });
+    periodsResponseCache.set(cacheKey, { data: result, expiresAt: Date.now() + periodsResponseCacheTtlMs });
     res.json(result);
   } catch (error) {
-    periodsResponseCache.delete(req.query.region || 'all');
+    periodsResponseCache.delete(`${req.query.region || 'all'}:${req.query.expansion || 'all'}`);
     res.status(503).json({ error: 'Could not load weekly periods.', detail: error.message });
   }
 });
