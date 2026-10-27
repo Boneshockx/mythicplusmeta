@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { pool } from './db.js';
 import { blizzardData } from './blizzard.js';
 import { syncChinaWeekly } from './sync-weekly-cn.js';
+import { refreshPageCaches } from './refresh-page-caches.js';
 
 const args = new Map(process.argv.slice(2).filter((x) => x.startsWith('--')).map((x) => {
   const [key, ...rest] = x.slice(2).split('=');
@@ -203,5 +204,6 @@ try {
   console.error(error.message);
   process.exitCode = 1;
 } finally {
+  await refreshPageCaches();
   await pool.end();
 }

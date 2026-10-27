@@ -23,11 +23,12 @@ const normalizeDungeonName = (value) => String(value || 'Unknown dungeon').toLoc
 const seasonFirstMplusPeriod = new Map([[18, 1077]]);
 const supportedExpansions = ['Legion', 'Battle for Azeroth', 'Shadowlands', 'Dragonflight', 'The War Within', 'Midnight'];
 const periodsResponseCache = new Map();
-const periodsResponseCacheTtlMs = 15_000;
+const periodsResponseCacheTtlMs = 24 * 60 * 60 * 1000;
 const historyResponseCache = new Map();
-const historyResponseCacheTtlMs = 30_000;
+const historyResponseCacheTtlMs = 24 * 60 * 60 * 1000;
 const periodDetailsCache = new Map();
 const periodDetailsCacheTtlMs = 30_000;
+const dashboardDataCacheTtlMs = 24 * 60 * 60 * 1000;
 const seasonWeekNumbersCache = new Map();
 const seasonWeekNumbersCacheTtlMs = 30_000;
 const keyDifficultyMultiplier = 1.15;
@@ -251,6 +252,42 @@ const giniValue = (values) => {
   const weighted = sorted.reduce((total, value, index) => total + (2 * (index + 1) - sorted.length - 1) * value, 0);
   return Math.max(0, Math.min(1, weighted / (sorted.length * sum)));
 };
+
+app.post('/api/internal/refresh-page-cache', async (req, res) => {
+  const localAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+  if (!localAddresses.has(req.socket.remoteAddress)) return res.sendStatus(404);
+
+  periodsResponseCache.clear();
+  historyResponseCache.clear();
+  periodDetailsCache.clear();
+  seasonWeekNumbersCache.clear();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const refresh = async (label, resource) => {
+    console.log(`[page-cache] Starting ${label} refresh.`);
+    try {
+      const response = await fetch(`${baseUrl}${resource}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await response.json();
+      console.log(`[page-cache] Refreshed ${label}.`);
+      return true;
+    } catch (error) {
+      console.warn(`[page-cache] Could not refresh ${label}: ${error.message}`);
+      return false;
+    }
+  };
+
+  const currentResponse = await fetch(`${baseUrl}/api/meta/current-period?region=all`).catch(() => null);
+  let dashboardWarmed = false;
+  if (currentResponse?.ok) {
+    const current = await currentResponse.json();
+    dashboardWarmed = await refresh('dashboard data', `/api/meta/period/${current.periodId}?region=all&view=dashboard`);
+  } else {
+    console.warn('[page-cache] No current all-region period found; dashboard cache was not warmed.');
+  }
+  const periodsWarmed = await refresh('periods list', '/api/meta/periods?expansion=Midnight');
+  const historyWarmed = await refresh('history data', '/api/meta/history?region=all&expansion=Midnight');
+  res.json({ dashboardWarmed, periodsWarmed, historyWarmed });
+});
 
 async function getSeasonWeekNumbers(seasonId) {
   const cached = seasonWeekNumbersCache.get(Number(seasonId));
@@ -516,7 +553,8 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       sampleSize: runs.length, totalCharacters: totalSlots, averageLevel: runs.length ? keySum / runs.length : 0, highestKey: maxKey,
       topComps: dashboardView ? topComps.slice(0, 3) : topComps,
       fastestHighestRun: fastestHighestRunData, specs: specList, representation, diversity, dungeons: dungeonList };
-    periodDetailsCache.set(cacheKey, { data: responseData, expiresAt: Date.now() + periodDetailsCacheTtlMs });
+    const ttl = dashboardView ? dashboardDataCacheTtlMs : periodDetailsCacheTtlMs;
+    periodDetailsCache.set(cacheKey, { data: responseData, expiresAt: Date.now() + ttl });
     res.json(responseData);
   } catch (error) {
     res.status(503).json({ error: 'Could not load weekly meta details.', detail: error.message });

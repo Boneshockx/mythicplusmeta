@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { pool } from './db.js';
 import { blizzardData } from './blizzard.js';
 import { getMythicPlusStaticData, getRegionPeriods, getTopRuns, normalizeRun } from './rio.js';
+import { refreshPageCaches } from './refresh-page-caches.js';
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
@@ -426,5 +427,6 @@ try {
   console.error(`[history] Import failed: ${error.stack || error.message}`);
   process.exitCode = 1;
 } finally {
+  await refreshPageCaches();
   await pool.end();
 }
