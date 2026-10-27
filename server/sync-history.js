@@ -43,9 +43,15 @@ async function loadRaiderIoSeasons() {
     console.log(`[history] Raider.IO: loading static season data for expansion ${expansionId}.`);
     try {
       const data = await getMythicPlusStaticData(expansionId);
-      const expansionSeasons = (data?.seasons || [])
-        .filter((season) => Number(season.blizzard_season_id) > 0 && season.slug)
+      const allExpansionSeasons = (data?.seasons || [])
+        .filter((season) => Number(season.blizzard_season_id) > 0 && season.slug);
+      const expansionSeasons = allExpansionSeasons
+        .filter((season) => season.is_main_season === true)
         .sort((a, b) => Number(a.blizzard_season_id) - Number(b.blizzard_season_id));
+      const excludedCount = allExpansionSeasons.length - expansionSeasons.length;
+      if (allExpansionSeasons.length && !expansionSeasons.length) {
+        throw new Error(`Raider.IO returned seasons for expansion ${expansionId}, but none were marked as main seasons.`);
+      }
       for (const [index, season] of expansionSeasons.entries()) {
         const blizzardSeasonId = Number(season.blizzard_season_id);
         seasons.set(blizzardSeasonId, {
@@ -56,7 +62,7 @@ async function loadRaiderIoSeasons() {
           displayName: `${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} Season ${index + 1}`
         });
       }
-      console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `expansion ${expansionId}`} returned ${expansionSeasons.length} season(s): ${expansionSeasons.map((season, index) => `${Number(season.blizzard_season_id)}=${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} S${index + 1}`).join(', ') || 'none'}.`);
+      console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `expansion ${expansionId}`} returned ${expansionSeasons.length} main season(s)${excludedCount ? `; ignored ${excludedCount} post-season or special leaderboard entry/entries` : ''}: ${expansionSeasons.map((season, index) => `${Number(season.blizzard_season_id)}=${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} S${index + 1}`).join(', ') || 'none'}.`);
     } catch (error) {
       console.warn(`[history] Raider.IO: could not load expansion ${expansionId}: ${error.message}`);
     }
