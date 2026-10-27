@@ -243,11 +243,19 @@ const giniValue = (values) => {
 
 async function getSeasonWeekNumbers(seasonId) {
   const [periods] = await pool.execute(
-    `SELECT period_id, MIN(start_timestamp) AS start_timestamp
-     FROM weekly_periods WHERE season_id = ? GROUP BY period_id
-     ORDER BY MIN(start_timestamp), period_id`, [seasonId]
+    `SELECT p.period_id, MIN(p.start_timestamp) AS start_timestamp, COUNT(r.id) AS run_count
+     FROM weekly_periods p LEFT JOIN weekly_leaderboard_runs r
+       ON r.period_id = p.period_id AND r.region = p.region
+     WHERE p.season_id = ? GROUP BY p.period_id
+     ORDER BY MIN(p.start_timestamp), p.period_id`, [seasonId]
   );
-  const firstPeriodId = seasonFirstMplusPeriod.get(Number(seasonId));
+  // Blizzard period calendars can include weeks before Mythic+ opens. Use the
+  // first period that actually has imported runs as the season's Week 1. Until
+  // runs are imported, retain the known current-season boundary as a fallback.
+  const firstRunPeriod = periods.find((period) => Number(period.run_count) > 0);
+  const firstPeriodId = firstRunPeriod
+    ? Number(firstRunPeriod.period_id)
+    : seasonFirstMplusPeriod.get(Number(seasonId));
   const activeSeasonPeriods = firstPeriodId
     ? periods.filter((period) => Number(period.period_id) >= firstPeriodId)
     : periods;
@@ -288,8 +296,7 @@ app.get('/api/meta/periods', async (req, res) => {
     }
     for (const period of grouped.values()) {
       period.weekNumber = weekNumbers.get(Number(period.periodId)) || null;
-      const firstMplusPeriod = seasonFirstMplusPeriod.get(Number(period.seasonId));
-      period.offSeason = Boolean(firstMplusPeriod && Number(period.periodId) < firstMplusPeriod);
+      period.offSeason = !weekNumbers.has(Number(period.periodId));
     }
     res.json([...grouped.values()]);
   } catch (error) {
@@ -411,8 +418,7 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     }).sort((a, b) => b.easeScore - a.easeScore || b.runs - a.runs).map((dungeon, index) => ({ ...dungeon, easeRank: index + 1 }));
     const start = Math.min(...periodRows.map((item) => Number(item.start_timestamp)));
     const end = Math.max(...periodRows.map((item) => Number(item.end_timestamp)));
-    const firstMplusPeriod = seasonFirstMplusPeriod.get(Number(periodRows[0].season_id));
-    const offSeason = Boolean(firstMplusPeriod && periodId < firstMplusPeriod);
+    const offSeason = !weekNumbers.has(periodId);
     res.json({ periodId, weekNumber, offSeason, regions: periodRows.map((item) => item.region),
       regionWindows: periodRows.map((item) => ({ region: item.region, start: Number(item.start_timestamp), end: Number(item.end_timestamp) })),
       season: periodRows[0].season_name, start, end,
