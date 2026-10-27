@@ -6,6 +6,14 @@ import { getMythicPlusStaticData, getRegionPeriods, getTopRuns, normalizeRun } f
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
+const EXPANSION_NAMES = {
+  6: 'Legion',
+  7: 'Battle for Azeroth',
+  8: 'Shadowlands',
+  9: 'Dragonflight',
+  10: 'The War Within',
+  11: 'Midnight'
+};
 const BLIZZARD_REGIONS = ['us', 'eu', 'tw', 'kr'];
 const REGIONS = [...BLIZZARD_REGIONS, 'cn'];
 const MAX_RIO_PAGE = 100;
@@ -34,12 +42,20 @@ async function loadRaiderIoSeasons() {
     console.log(`[history] Raider.IO: loading static season data for expansion ${expansionId}.`);
     try {
       const data = await getMythicPlusStaticData(expansionId);
-      for (const season of data?.seasons || []) {
+      const expansionSeasons = (data?.seasons || [])
+        .filter((season) => Number(season.blizzard_season_id) > 0 && season.slug)
+        .sort((a, b) => Number(a.blizzard_season_id) - Number(b.blizzard_season_id));
+      for (const [index, season] of expansionSeasons.entries()) {
         const blizzardSeasonId = Number(season.blizzard_season_id);
-        if (!blizzardSeasonId || !season.slug) continue;
-        seasons.set(blizzardSeasonId, season);
+        seasons.set(blizzardSeasonId, {
+          ...season,
+          expansionId,
+          expansionName: EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`,
+          expansionSeasonNumber: index + 1,
+          displayName: `${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} Season ${index + 1}`
+        });
       }
-      console.log(`[history] Raider.IO: expansion ${expansionId} returned ${(data?.seasons || []).length} season(s).`);
+      console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `expansion ${expansionId}`} returned ${expansionSeasons.length} season(s): ${expansionSeasons.map((season, index) => `${Number(season.blizzard_season_id)}=${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} S${index + 1}`).join(', ') || 'none'}.`);
     } catch (error) {
       console.warn(`[history] Raider.IO: could not load expansion ${expansionId}: ${error.message}`);
     }
@@ -49,7 +65,7 @@ async function loadRaiderIoSeasons() {
   return seasons;
 }
 
-async function loadBlizzardRegion(region) {
+async function loadBlizzardRegion(region, rioSeasons) {
   console.log(`[history] ${region.toUpperCase()}: loading all Blizzard Mythic+ seasons.`);
   const seasonIndex = await blizzardData(region, '/data/wow/mythic-keystone/season/index');
   const indexedSeasons = [...(seasonIndex?.seasons || [])].sort((a, b) => idFrom(a) - idFrom(b));
@@ -65,7 +81,8 @@ async function loadBlizzardRegion(region) {
       console.warn(`[history] ${region.toUpperCase()}: season ${seasonId} has no detail response; skipping it.`);
       continue;
     }
-    const seasonName = detail.name || item.name || `Season ${seasonId}`;
+    const rioSeason = rioSeasons.get(seasonId);
+    const seasonName = rioSeason?.displayName || detail.name || item.name || `Season ${seasonId}`;
     const periodIds = [...new Set((detail.periods || []).map(idFrom).filter(Boolean))].sort((a, b) => a - b);
     seasons.push({ id: seasonId, name: seasonName, periodIds });
     console.log(`[history] ${region.toUpperCase()}: ${seasonName} (Blizzard season ${seasonId}) has ${periodIds.length} period(s).`);
@@ -260,7 +277,7 @@ try {
 
   const rioSeasons = await loadRaiderIoSeasons();
   const regionData = new Map();
-  for (const region of BLIZZARD_REGIONS) regionData.set(region, await loadBlizzardRegion(region));
+  for (const region of BLIZZARD_REGIONS) regionData.set(region, await loadBlizzardRegion(region, rioSeasons));
   const reference = regionData.get('us');
   const cnPeriods = await loadChinaPeriods(reference.seasons, reference.periods);
   regionData.set('cn', { seasons: reference.seasons, periods: cnPeriods });
