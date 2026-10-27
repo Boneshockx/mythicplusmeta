@@ -319,8 +319,7 @@ function showHistoryTooltip(event, segment) {
     top: Math.max(8, Math.min(window.innerHeight - 104, y + 14))
   };
 }
-function zoomHistoryAtPointer(event) {
-  const target = event.currentTarget;
+function zoomHistoryAtPointer(event, target = event.currentTarget) {
   const track = target.parentElement;
   if (event.type === 'mouseenter' && track.dataset.historyZoomDone === 'true') return;
   if (event.type === 'mouseenter') track.dataset.historyZoomDone = 'true';
@@ -331,6 +330,17 @@ function zoomHistoryAtPointer(event) {
   const segmentLeft = targetRect.left - trackRect.left + track.scrollLeft;
   const pointerOffset = pointerX - trackRect.left;
   track.scrollLeft = segmentLeft + targetRect.width / 2 - pointerOffset;
+}
+function zoomHistoryFromTrack(event) {
+  const track = event.currentTarget;
+  if (event.target !== track) return;
+  const segments = [...track.children].filter((element) => element.classList.contains('history-bar-segment'));
+  if (!segments.length) return;
+  const nearest = segments.reduce((closest, segment) => {
+    const distance = Math.abs(segment.getBoundingClientRect().left + segment.getBoundingClientRect().width / 2 - event.clientX);
+    return !closest || distance < closest.distance ? { segment, distance } : closest;
+  }, null);
+  zoomHistoryAtPointer(event, nearest.segment);
 }
 function resetHistoryZoom(event) {
   delete event.currentTarget.dataset.historyZoomDone;
@@ -597,7 +607,7 @@ onMounted(() => {
                 <button v-for="week in season.bars" :key="week.periodId" class="history-bar-row" @click="navigatePage('week', week.periodId)">
                   <span class="history-bar-label"><b>{{ week.periodId }}</b><small>{{ new Date(week.start).toLocaleDateString() }}</small></span>
                   <span class="history-bar-track-wrap" @mouseenter="updateHistoryScrollHint" @focusin="updateHistoryScrollHint" @mousemove="updateHistoryScrollHint">
-                    <span class="history-bar-track" @scroll="updateHistoryScrollHint" @wheel.prevent="scrollHistoryTrack" @mouseleave="resetHistoryZoom($event)">
+                    <span class="history-bar-track" @mouseenter="zoomHistoryFromTrack" @scroll="updateHistoryScrollHint" @wheel.prevent="scrollHistoryTrack" @mouseleave="resetHistoryZoom($event)">
                       <span v-for="segment in week.segments" :key="segment.key" class="history-bar-segment" :class="{ 'top-five-spec': segment.isTopFive }" :style="{ width: `${segment.share}%`, background: segment.color }" :aria-label="`${segment.spec} ${segment.className}: ${segment.share.toFixed(1)}%`" role="img" tabindex="0" @mouseenter="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @mousemove="moveHistoryTooltip" @mouseleave="historyTooltip = null" @focus="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @blur="historyTooltip = null"><img :src="specIcon(segment.spec, segment.className)" alt="" loading="lazy" @error="handleIconError($event, segment.className)"/><small>{{ segment.share.toFixed(1) }}%</small></span>
                     </span>
                     <span class="history-scroll-hint history-scroll-hint-left" aria-hidden="true">‹ Scroll</span><span class="history-scroll-hint history-scroll-hint-right" aria-hidden="true">Scroll ›</span>
