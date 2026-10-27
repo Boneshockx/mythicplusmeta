@@ -26,7 +26,7 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .class-card{background:#151f2c;border-color:#2b394b}.class-card-head b{color:#edf2f7}.class-card-head strong{color:var(--class-color)}.class-specs div{color:#a4afbd}.class-specs div span:last-child{color:#e0e6ee}.class-track i{filter:saturate(1.15)}
 .method-note{color:#98a4b3}.method-note b{color:#d7dfe9}.site-footer{border-color:#253142;color:#99a5b4}.site-footer .brand{color:#eef2f7}.site-footer a:not(.brand){color:#b8df7a}
 .sort-button{display:inline-flex;align-items:center;gap:5px;border:0;padding:0;background:none;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer}.sort-button span{color:#758294;font-size:12px}.sort-button:hover,.sort-button.selected{color:#dce8c9}.sort-button.selected span{color:#a5db48}
-.party-cell{display:grid;justify-items:start;gap:5px}.sample-badge{font-size:8px;font-weight:700;letter-spacing:.06em;padding:3px 6px;border-radius:4px}.sample-badge.established{color:#c9ee8b;background:#263a1d}.sample-badge.low-sample{color:#bcc5d0;background:#202b38}.meta-score-value{font-size:11px;font-weight:700;color:#b8df7a}
+.party-cell{display:grid;justify-items:start;gap:5px}.meta-score-value{font-size:11px;font-weight:700;color:#b8df7a}
 
 .back-to-dashboard{border:1px solid #344358;border-radius:5px;background:#172231;color:#dbe4ef;padding:8px 11px;font:600 11px 'DM Sans';cursor:pointer;white-space:nowrap}.back-to-dashboard:hover{border-color:#a5db48;color:#c8ee8e}
 .methodology-main{max-width:900px;margin:0 auto;padding:48px 0 72px}.methodology-main>h1{font:800 clamp(34px,5vw,48px)/1.08 Manrope,sans-serif;letter-spacing:-.06em;margin:15px 0 10px;color:#f2f5fa}.methodology-main>h1 span{color:#a5db48}.methodology-lead{max-width:700px;margin:0 0 25px;color:#a6b0bd;font-size:15px;line-height:1.7}.methodology-card{background:#121a26;border:1px solid #253142;border-radius:8px;padding:23px 25px;margin:12px 0}.methodology-card h2{font:700 19px Manrope,sans-serif;letter-spacing:-.035em;color:#edf1f7;margin:7px 0 11px}.methodology-card p{max-width:780px;color:#aeb8c6;font-size:13px;line-height:1.75;margin:9px 0}.methodology-card b{color:#e7edf6}.methodology-card code{display:inline-block;background:#202c39;color:#c8ee8e;padding:2px 5px;border-radius:4px}.formula{display:inline-block;margin:3px 0 5px;padding:12px 15px;border:1px solid #344358;border-radius:6px;background:#0d141e;color:#c8ee8e;font:600 13px 'DM Sans'}.back-to-dashboard{margin-top:10px}.methodology-footer-link{color:#b8df7a;text-decoration:none;font-size:10px;font-weight:700}.methodology-footer-link:hover{color:#d7f4aa}
@@ -234,7 +234,7 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .summary-foot,.weekly-footnote,.reset-window,.weekly-title-row p,.weekly-window-chips span,.role-representation-item,.weekly-spec-list,.weekly-diversity-list>div,.history-legend,.method-note,.site-footer,.methodology-footer-link{font-size:12px}
 .panel-heading p,.panel-heading .muted,.weekly-table td,.comps-table td,.dungeon-table td,.role-item small,.spec-name small,.class-specs div,.history-bar-label small,.history-bar-stats{font-size:12px}
 .weekly-spec-list small,.weekly-diversity-list small,.dungeon-metric em,.dungeon-sample small{font-size:11px}
-.sample-badge,.easiest-badge,.no-mplus-badge{font-size:11px}
+.easiest-badge,.no-mplus-badge{font-size:11px}
 .dungeon-table td:first-child b{color:#f1f5fb}
 .dungeon-table tr.most-time-left-row{background:#1a2a1c}.table-highlight-badge{display:table;margin-top:4px;padding:2px 5px;border-radius:3px;background:#344d24;color:#c8ee8e;font-size:10px;font-weight:700;white-space:nowrap}
 .dungeon-metric small,.dungeon-sample small,.dungeon-metric em,.table-subtext{font-size:11px}
@@ -311,7 +311,7 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .role-spec-chart{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;align-content:start}
 .comp-labels{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
 .comp-table-cell{display:grid;justify-items:start;gap:2px}
-.comp-labels .sample-badge,.region-dominance-badge{width:max-content;font-size:9px}
+.region-dominance-badge{width:max-content;font-size:9px}
 .region-dominance-badge{padding:3px 6px;border-radius:4px;background:#25364b;color:#b9d9ff;font-weight:700;letter-spacing:.04em}
 .role-spec-row{display:grid;gap:5px;min-width:0}
 .role-spec-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;color:#e7edf5;text-transform:capitalize}

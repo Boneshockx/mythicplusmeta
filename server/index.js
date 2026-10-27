@@ -162,12 +162,10 @@ app.get('/api/meta/summary', async (req, res) => {
       const roster = typeof run.roster === 'string' ? JSON.parse(run.roster) : run.roster;
       return sum + (roster?.length || 0);
     }, 0);
-    const minRunsForEstablished = Math.max(50, Math.ceil(sampleSize * 0.025));
     const topComps = calculateMetaRanking([...comps.values()].map((x) => ({
       composition: x.composition, count: x.count, maxLevel: x.maxLevel,
       averageLevel: x.count ? x.levelTotal / x.count : 0,
       share: sampleSize ? x.count / sampleSize * 100 : 0,
-      established: x.count >= minRunsForEstablished,
       regions: [...x.regions],
       dominantRegion: [...x.regionCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null,
       dominantRegionShare: x.count ? Math.max(...x.regionCounts.values()) / x.count * 100 : 0,
@@ -216,7 +214,7 @@ app.get('/api/meta/summary', async (req, res) => {
 
     res.json({
       season, region, sampleSize, totalCharacters, uniqueCharacters: seenCharacters.size,
-      minimumLevel, days, sampleLimit, minRunsForEstablished, availableKeyLevels: availableLevels.map((x) => x.level),
+      minimumLevel, days, sampleLimit, availableKeyLevels: availableLevels.map((x) => x.level),
       averageLevel: sampleSize ? keyLevelTotal / sampleSize : 0, highestKey,
       topComps, specs: specList, classes: classList, dungeons: dungeonList,
       diversity, lastSync: syncRows[0] || null
@@ -362,11 +360,9 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       levels.set(run.level, level);
     }
     const totalSlots = runs.reduce((total, run) => total + (typeof run.roster === 'string' ? JSON.parse(run.roster) : run.roster).length, 0);
-    const minEstablished = Math.max(50, Math.ceil(runs.length * 0.025));
     const topComps = calculateMetaRanking([...comps.values()].map((x) => ({
       composition: x.composition, count: x.count, averageLevel: x.count ? x.levelTotal / x.count : 0,
       maxLevel: x.maxLevel, share: runs.length ? x.count / runs.length * 100 : 0,
-      established: x.count >= minEstablished,
       dominantRegion: [...x.regionCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null,
       dominantRegionShare: x.count ? Math.max(...x.regionCounts.values()) / x.count * 100 : 0
     })));
