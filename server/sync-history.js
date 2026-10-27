@@ -95,7 +95,23 @@ async function loadBlizzardRegion(region, rioSeasons) {
     console.log(`[history] ${region.toUpperCase()}: ${seasonName} (Blizzard season ${seasonId}) has ${periodIds.length} period(s).`);
 
     for (const [periodIndex, periodId] of periodIds.entries()) {
-      const period = await blizzardData(region, `/data/wow/mythic-keystone/period/${periodId}`);
+      let period;
+      try {
+        period = await blizzardData(region, `/data/wow/mythic-keystone/period/${periodId}`);
+      } catch (error) {
+        console.warn(`[history] ${region.toUpperCase()} ${seasonName}: period ${periodId} failed after retries (${error.message}); skipping this period and continuing.`);
+        // Still correct the label on an already imported period without replacing
+        // its previously saved regional reset timestamps.
+        await pool.execute(
+          `UPDATE weekly_periods SET season_id = ?, season_name = ? WHERE period_id = ? AND region = ?`,
+          [seasonId, seasonName, periodId, region]
+        );
+        if ((periodIndex + 1) % 10 === 0 || periodIndex + 1 === periodIds.length) {
+          console.log(`[history] ${region.toUpperCase()} ${seasonName}: checked ${periodIndex + 1}/${periodIds.length} period windows (including skipped failures).`);
+        }
+        if (blizzardDelay) await sleep(blizzardDelay);
+        continue;
+      }
       if (period?.start_timestamp && period?.end_timestamp) {
         const window = { id: periodId, seasonId, seasonName, start: Number(period.start_timestamp), end: Number(period.end_timestamp) };
         periods.set(periodId, window);
