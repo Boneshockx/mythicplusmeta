@@ -2,12 +2,27 @@ const API_ROOT = 'https://raider.io/api/v1';
 
 async function fetchJson(url) {
   for (let attempt = 1; attempt <= 6; attempt += 1) {
-    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    let response;
+    try {
+      response = await fetch(url, { headers: { Accept: 'application/json' } });
+    } catch (error) {
+      if (attempt === 6) throw new Error(`Raider.IO request failed after ${attempt} attempts: ${error.message}`);
+      const delay = Math.min(30_000, 1000 * (2 ** (attempt - 1)));
+      console.warn(`Raider.IO network error (${error.message}); retrying in ${delay / 1000}s (attempt ${attempt}/6).`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
     if (response.status === 429) {
       const waitSeconds = Math.max(1, Number(response.headers.get('retry-after') || 60));
       if (attempt === 6) throw new Error(`Raider.IO rate limit persisted after ${attempt} attempts.`);
       console.warn(`Raider.IO rate limit reached; retrying in ${waitSeconds}s (attempt ${attempt}/6).`);
       await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+      continue;
+    }
+    if (response.status >= 500 && attempt < 6) {
+      const delay = Math.min(30_000, 1000 * (2 ** (attempt - 1)));
+      console.warn(`Raider.IO returned HTTP ${response.status}; retrying in ${delay / 1000}s (attempt ${attempt}/6).`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     }
     if (!response.ok) throw new Error(`Raider.IO returned HTTP ${response.status}.`);

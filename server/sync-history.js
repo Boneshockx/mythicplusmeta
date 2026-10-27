@@ -203,6 +203,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
   let savedCandidateCount = 0;
   let unmapped = 0;
   let persisted = 0;
+  let failedScans = 0;
 
   const scanDungeon = async ([dungeonIndex, dungeon]) => {
     const dungeonName = dungeon.name || dungeon.slug;
@@ -212,13 +213,23 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
     let reachedPageCap = true;
     let dungeonReceived = 0;
     let dungeonAssigned = 0;
+    let failedPage = null;
     console.log(`[history] ${region.toUpperCase()} ${season.name}: dungeon ${dungeonName} (${dungeonIndex + 1}/${dungeons.length}), pages 0-${MAX_RIO_PAGE}.`);
 
     for (let page = 0; page <= MAX_RIO_PAGE; page += 1) {
       if (page === 0 || (page + 1) % 10 === 0) {
         console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: requesting page ${page}/${MAX_RIO_PAGE}.`);
       }
-      const entries = await getTopRuns({ region, season: rioSeason.slug, dungeon: dungeonKey, page });
+      let entries;
+      try {
+        entries = await getTopRuns({ region, season: rioSeason.slug, dungeon: dungeonKey, page });
+      } catch (error) {
+        failedPage = { page, message: error.message };
+        reachedPageCap = false;
+        failedScans += 1;
+        console.error(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: page ${page} failed after retries (${error.message}); keeping earlier pages and moving to the next dungeon.`);
+        break;
+      }
       if (!entries.length) {
         reachedPageCap = false;
         console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: page ${page} is empty; pagination complete.`);
@@ -277,7 +288,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       dungeonSaved += values.length;
     }
     persisted += dungeonSaved;
-    console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: finished ${pagesLoaded} page(s), saved ${dungeonSaved} run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
+    console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: ${failedPage ? `partial scan stopped at page ${failedPage.page}` : 'finished scan'}; loaded ${pagesLoaded} page(s), saved ${dungeonSaved} run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
   };
   let nextDungeon = 0;
   const worker = async () => {
@@ -288,8 +299,8 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
   };
   await Promise.all(Array.from({ length: Math.min(rioConcurrency, dungeons.length) }, worker));
 
-  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, saved ${persisted}, could not map ${unmapped} to a known period.`);
-  return { runs: persisted, unmapped };
+  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, saved ${persisted}, could not map ${unmapped} to a known period, incomplete dungeon scans ${failedScans}.`);
+  return { runs: persisted, unmapped, failedScans };
 }
 
 try {
@@ -308,6 +319,7 @@ try {
 
   let totalRuns = 0;
   let skippedSeasons = 0;
+  let failedScans = 0;
   if (!labelsOnly) {
     for (const region of REGIONS) {
       const data = regionData.get(region);
@@ -321,11 +333,19 @@ try {
         console.log(`[history] ${region.toUpperCase()}: season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, Raider.IO ${rioSeason.slug}.`);
         const result = await importSeasonRegion(region, season, rioSeason, data.periods);
         totalRuns += result.runs;
+        failedScans += result.failedScans;
       }
     }
   }
 
-  console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s.${labelsOnly ? ' Refreshed season names and period windows without importing runs.' : ` Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`}`);
+  if (labelsOnly) {
+    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Refreshed season names and period windows without importing runs.`);
+  } else if (failedScans) {
+    console.warn(`[history] Finished in ${Math.round((Date.now() - startedAt) / 1000)}s with ${failedScans} incomplete dungeon scan(s). Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without Raider.IO metadata. Rerun the command to retry incomplete data.`);
+    process.exitCode = 1;
+  } else {
+    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
+  }
 } catch (error) {
   console.error(`[history] Import failed: ${error.stack || error.message}`);
   process.exitCode = 1;
