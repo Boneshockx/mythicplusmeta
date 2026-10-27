@@ -26,6 +26,10 @@ const periodsResponseCache = new Map();
 const periodsResponseCacheTtlMs = 15_000;
 const historyResponseCache = new Map();
 const historyResponseCacheTtlMs = 30_000;
+const periodDetailsCache = new Map();
+const periodDetailsCacheTtlMs = 30_000;
+const seasonWeekNumbersCache = new Map();
+const seasonWeekNumbersCacheTtlMs = 30_000;
 const keyDifficultyMultiplier = 1.15;
 function calculateMetaRanking(compositions) {
   if (!compositions.length) return [];
@@ -249,24 +253,28 @@ const giniValue = (values) => {
 };
 
 async function getSeasonWeekNumbers(seasonId) {
+  const cached = seasonWeekNumbersCache.get(Number(seasonId));
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
   const [periods] = await pool.execute(
-    `SELECT p.period_id, MIN(p.start_timestamp) AS start_timestamp, COUNT(r.id) AS run_count
-     FROM weekly_periods p LEFT JOIN weekly_leaderboard_runs r
-       ON r.period_id = p.period_id AND r.region = p.region
-     WHERE p.season_id = ? GROUP BY p.period_id
+    `SELECT p.period_id, MIN(p.start_timestamp) AS start_timestamp,
+       MAX(EXISTS (SELECT 1 FROM weekly_leaderboard_runs r
+                   WHERE r.period_id = p.period_id AND r.region = p.region)) AS has_runs
+     FROM weekly_periods p WHERE p.season_id = ? GROUP BY p.period_id
      ORDER BY MIN(p.start_timestamp), p.period_id`, [seasonId]
   );
   // Blizzard period calendars can include weeks before Mythic+ opens. Use the
   // first period that actually has imported runs as the season's Week 1. Until
   // runs are imported, retain the known current-season boundary as a fallback.
-  const firstRunPeriod = periods.find((period) => Number(period.run_count) > 0);
+  const firstRunPeriod = periods.find((period) => Number(period.has_runs) > 0);
   const firstPeriodId = firstRunPeriod
     ? Number(firstRunPeriod.period_id)
     : seasonFirstMplusPeriod.get(Number(seasonId));
   const activeSeasonPeriods = firstPeriodId
     ? periods.filter((period) => Number(period.period_id) >= firstPeriodId)
     : periods;
-  return new Map(activeSeasonPeriods.map((period, index) => [Number(period.period_id), index + 1]));
+  const value = new Map(activeSeasonPeriods.map((period, index) => [Number(period.period_id), index + 1]));
+  seasonWeekNumbersCache.set(Number(seasonId), { value, expiresAt: Date.now() + seasonWeekNumbersCacheTtlMs });
+  return value;
 }
 
 app.get('/api/meta/periods', async (req, res) => {
@@ -345,10 +353,48 @@ app.get('/api/meta/periods', async (req, res) => {
   }
 });
 
+app.get('/api/meta/current-period', async (req, res) => {
+  try {
+    const region = req.query.region || 'all';
+    const now = Date.now();
+    let rows;
+    if (region === 'all') {
+      [rows] = await pool.execute(
+        `SELECT p.period_id, MAX(p.start_timestamp) AS start_timestamp
+         FROM weekly_periods p
+         GROUP BY p.period_id
+         HAVING COUNT(DISTINCT CASE
+           WHEN p.region IN ('us', 'eu', 'tw', 'kr', 'cn') AND p.start_timestamp <= ? THEN p.region
+         END) = 5
+           AND EXISTS (SELECT 1 FROM weekly_leaderboard_runs r WHERE r.period_id = p.period_id)
+         ORDER BY start_timestamp DESC, p.period_id DESC
+         LIMIT 1`, [now]
+      );
+    } else {
+      [rows] = await pool.execute(
+        `SELECT p.period_id
+         FROM weekly_periods p
+         WHERE p.region = ? AND p.end_timestamp > ?
+           AND EXISTS (SELECT 1 FROM weekly_leaderboard_runs r WHERE r.period_id = p.period_id)
+         ORDER BY p.start_timestamp DESC, p.period_id DESC
+         LIMIT 1`, [region, now]
+      );
+    }
+    if (!rows.length) return res.status(404).json({ error: `No current-period data is available for ${region}.` });
+    res.json({ periodId: Number(rows[0].period_id) });
+  } catch (error) {
+    res.status(503).json({ error: 'Could not find the current period.', detail: error.message });
+  }
+});
+
 app.get('/api/meta/period/:periodId', async (req, res) => {
   try {
     const periodId = Number(req.params.periodId);
     const region = req.query.region || 'all';
+    const dashboardView = req.query.view === 'dashboard';
+    const cacheKey = `${periodId}:${region}:${dashboardView ? 'dashboard' : 'full'}`;
+    const cached = periodDetailsCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return res.json(cached.data);
     const periodParams = region === 'all' ? [periodId] : [periodId, region];
     const periodWhere = region === 'all' ? 'period_id = ?' : 'period_id = ? AND region = ?';
     const [periodRows] = await pool.execute(`SELECT * FROM weekly_periods WHERE ${periodWhere} ORDER BY region`, periodParams);
@@ -357,11 +403,18 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     const weekNumber = weekNumbers.get(periodId) || null;
     const runParams = region === 'all' ? [periodId] : [periodId, region];
     const runWhere = region === 'all' ? 'period_id = ?' : 'period_id = ? AND region = ?';
-    const [runs] = await pool.execute(`SELECT region, dungeon_id, dungeon, ranking, level, score, completed_at, roster, payload FROM weekly_leaderboard_runs WHERE ${runWhere} ORDER BY score DESC, level DESC`, runParams);
+    const [runs] = await pool.execute(
+      `SELECT region, dungeon, ranking, level, score, roster,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.duration')), 'null') AS duration,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.clear_time_ms')), 'null') AS clear_time_ms,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.clearTimeMs')), 'null') AS clearTimeMs
+       FROM weekly_leaderboard_runs WHERE ${runWhere} ORDER BY score DESC, level DESC`, runParams
+    );
     const comps = new Map(); const specs = new Map(); const levels = new Map(); const dungeons = new Map();
-    let keySum = 0; let maxKey = 0;
+    let keySum = 0; let maxKey = 0; let totalSlots = 0;
     for (const run of runs) {
       const roster = typeof run.roster === 'string' ? JSON.parse(run.roster) : run.roster;
+      totalSlots += roster.length;
       const compMembers = roster.map((player) => ({ spec: player.spec || 'Unknown', class: player.class || 'Unknown', role: normalizeWeeklyRole(player.role) }))
         .sort((a, b) => ['tank', 'healer', 'dps'].indexOf(a.role) - ['tank', 'healer', 'dps'].indexOf(b.role) || a.class.localeCompare(b.class) || a.spec.localeCompare(b.spec));
       const compKey = compMembers.map((p) => `${p.spec} ${p.class}`).join('|');
@@ -372,8 +425,7 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       const dungeonKey = normalizeDungeonName(run.dungeon);
       const dungeon = dungeons.get(dungeonKey) || { dungeon: run.dungeon, runs: 0, levelTotal: 0, maxLevel: 0, timedRuns: 0, clearTimeTotal: 0, remainingTimeTotalMs: 0, maxTimeRemainingMs: null, fastestRunLevel: null };
       dungeon.runs += 1; dungeon.levelTotal += Number(run.level); dungeon.maxLevel = Math.max(dungeon.maxLevel, Number(run.level));
-      const runPayload = typeof run.payload === 'string' ? JSON.parse(run.payload) : run.payload;
-      const clearTimeMs = Number(runPayload?.duration || runPayload?.clear_time_ms || runPayload?.clearTimeMs || 0);
+      const clearTimeMs = Number(run.duration) || Number(run.clear_time_ms) || Number(run.clearTimeMs) || 0;
       const timeLimitMs = dungeonTimersMs.get(dungeonKey) || null;
       if (clearTimeMs > 0) {
         dungeon.timedRuns += 1; dungeon.clearTimeTotal += clearTimeMs;
@@ -398,7 +450,6 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       }
       levels.set(run.level, level);
     }
-    const totalSlots = runs.reduce((total, run) => total + (typeof run.roster === 'string' ? JSON.parse(run.roster) : run.roster).length, 0);
     const topComps = calculateMetaRanking([...comps.values()].map((x) => ({
       composition: x.composition, count: x.count, averageLevel: x.count ? x.levelTotal / x.count : 0,
       maxLevel: x.maxLevel, share: runs.length ? x.count / runs.length * 100 : 0,
@@ -406,8 +457,7 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       dominantRegionShare: x.count ? Math.max(...x.regionCounts.values()) / x.count * 100 : 0
     })));
     const fastestHighestRun = runs.filter((run) => Number(run.level) === maxKey).map((run) => {
-      const payload = typeof run.payload === 'string' ? JSON.parse(run.payload) : run.payload;
-      const durationMs = Number(payload?.duration || payload?.clear_time_ms || payload?.clearTimeMs || 0);
+      const durationMs = Number(run.duration) || Number(run.clear_time_ms) || Number(run.clearTimeMs) || 0;
       const timeLimitMs = dungeonTimersMs.get(normalizeDungeonName(run.dungeon)) || 0;
       const timeRemainingMs = timeLimitMs - durationMs;
       return { run, durationMs, timeLimitMs, timeRemainingMs,
@@ -461,11 +511,14 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     const start = Math.min(...periodRows.map((item) => Number(item.start_timestamp)));
     const end = Math.max(...periodRows.map((item) => Number(item.end_timestamp)));
     const offSeason = !weekNumbers.has(periodId);
-    res.json({ periodId, weekNumber, offSeason, regions: periodRows.map((item) => item.region),
+    const responseData = { periodId, weekNumber, offSeason, regions: periodRows.map((item) => item.region),
       regionWindows: periodRows.map((item) => ({ region: item.region, start: Number(item.start_timestamp), end: Number(item.end_timestamp) })),
       season: periodRows[0].season_name, start, end,
       sampleSize: runs.length, totalCharacters: totalSlots, averageLevel: runs.length ? keySum / runs.length : 0, highestKey: maxKey,
-      topComps, fastestHighestRun: fastestHighestRunData, specs: specList, representation, diversity, dungeons: dungeonList });
+      topComps: dashboardView ? topComps.slice(0, 3) : topComps,
+      fastestHighestRun: fastestHighestRunData, specs: specList, representation, diversity, dungeons: dungeonList };
+    periodDetailsCache.set(cacheKey, { data: responseData, expiresAt: Date.now() + periodDetailsCacheTtlMs });
+    res.json(responseData);
   } catch (error) {
     res.status(503).json({ error: 'Could not load weekly meta details.', detail: error.message });
   }

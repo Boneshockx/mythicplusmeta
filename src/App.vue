@@ -372,19 +372,11 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    const periodsResponse = await fetch('/api/meta/periods');
-    const periods = await periodsResponse.json();
-    if (!periodsResponse.ok) throw new Error(periods.error || 'Could not load the current period.');
-    periodRows.value = periods;
-    const now = Date.now();
-    const allRegions = regions.filter((item) => item.id !== 'all').map((item) => item.id);
-    const hasSelectedRegion = (period) => region.value === 'all'
-      ? allRegions.every((regionId) => period.regionWindows.some((window) => window.region === regionId && window.start <= now))
-      : period.regionWindows.some((window) => window.region === region.value && window.end > now);
-    const current = periods.find((period) => period.runCount > 0 && hasSelectedRegion(period));
-    if (!current) throw new Error(`No current-period data is available for ${regions.find((item) => item.id === region.value)?.label || region.value}.`);
+    const currentResponse = await fetch(`/api/meta/current-period?region=${encodeURIComponent(region.value)}`);
+    const current = await currentResponse.json();
+    if (!currentResponse.ok) throw new Error(current.error || 'Could not load the current period.');
     currentPeriodId.value = current.periodId;
-    const response = await fetch(`/api/meta/period/${current.periodId}?region=${encodeURIComponent(region.value)}`);
+    const response = await fetch(`/api/meta/period/${current.periodId}?region=${encodeURIComponent(region.value)}&view=dashboard`);
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Could not load the current period.');
     const byClass = new Map();
