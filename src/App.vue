@@ -78,6 +78,7 @@ const weeklySortDirection = ref('desc');
 const weeklyPage = ref(1);
 const historyRegion = ref('all');
 const historyExpansion = ref('Midnight');
+const historyExpansions = ['Midnight', 'The War Within', 'Dragonflight', 'Shadowlands', 'Battle for Azeroth', 'Legion'];
 const weeklyLoading = ref(false);
 const weeklyError = ref('');
 const historyTooltip = ref(null);
@@ -145,9 +146,6 @@ const historyExpansionGroups = computed(() => {
 });
 const selectedHistoryExpansion = computed(() => historyExpansionGroups.value.find((item) => item.name === historyExpansion.value)
   || historyExpansionGroups.value[0] || null);
-watch(historyExpansionGroups, (groups) => {
-  if (!groups.some((group) => group.name === historyExpansion.value)) historyExpansion.value = groups[0]?.name || '';
-}, { immediate: true });
 const makeDiversityRows = (points = []) => [...points].sort((a, b) => b.level - a.level).map((point) => {
   const specs = (point.specs || []).filter((spec) => spec.share > 0);
   const topSpecs = new Set([...specs].sort((a, b) => b.share - a.share).slice(0, 5).map((spec) => spec.key));
@@ -437,7 +435,7 @@ async function loadHistory() {
   weeklyLoading.value = true;
   weeklyError.value = '';
   try {
-    const response = await fetch(`/api/meta/history?region=${encodeURIComponent(historyRegion.value)}`);
+    const response = await fetch(`/api/meta/history?region=${encodeURIComponent(historyRegion.value)}&expansion=${encodeURIComponent(historyExpansion.value)}`);
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Could not load weekly history.');
     historyRows.value = result;
@@ -576,15 +574,15 @@ onMounted(() => {
       <p class="weekly-lead">Compare the weekly specialization meta, highest completed key and diversity across periods.</p>
       <div v-if="weeklyError" class="notice error">{{ weeklyError }}</div>
       <div v-else-if="weeklyLoading" class="notice">Loading history...</div>
-      <div v-else-if="!historyRows.length" class="notice"><b>No history has been imported yet.</b><span>Import weekly periods to compare the meta over time.</span></div>
+      <div v-else-if="!historyRows.length" class="notice"><b>No history found for {{ historyExpansion }}.</b><span>Choose another expansion or import weekly periods for this expansion.</span></div>
       <template v-else>
         <section class="panel history-panel">
           <div class="panel-heading">
             <div><span class="eyebrow">WEEKLY SPEC REPRESENTATION</span><h2>How the meta shifted</h2><p>Each bar shows the share of player slots for each specialization. Periods combine imported regions; choose a region to view its reset weeks alone.</p></div>
             <div class="history-filters">
               <label class="level-filter">Expansion
-                <select v-model="historyExpansion">
-                  <option v-for="expansion in historyExpansionGroups" :key="expansion.name" :value="expansion.name">{{ expansion.name }}</option>
+                <select v-model="historyExpansion" @change="loadHistory">
+                  <option v-for="expansion in historyExpansions" :key="expansion" :value="expansion">{{ expansion }}</option>
                 </select>
               </label>
               <label class="level-filter">Region

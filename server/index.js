@@ -24,6 +24,8 @@ const seasonFirstMplusPeriod = new Map([[18, 1077]]);
 const supportedExpansions = ['Legion', 'Battle for Azeroth', 'Shadowlands', 'Dragonflight', 'The War Within', 'Midnight'];
 const periodsResponseCache = new Map();
 const periodsResponseCacheTtlMs = 15_000;
+const historyResponseCache = new Map();
+const historyResponseCacheTtlMs = 30_000;
 const keyDifficultyMultiplier = 1.15;
 function calculateMetaRanking(compositions) {
   if (!compositions.length) return [];
@@ -472,32 +474,51 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
 app.get('/api/meta/history', async (req, res) => {
   try {
     const region = req.query.region || 'all';
-    const params = region === 'all' ? [] : [region];
-    const where = region === 'all' ? '' : 'WHERE r.region = ?';
-    const [rows] = await pool.execute(
-      `SELECT p.period_id, p.region, p.season_name, p.start_timestamp, r.level, r.roster
-       FROM weekly_periods p JOIN weekly_leaderboard_runs r ON r.period_id=p.period_id AND r.region=p.region
-       ${where} ORDER BY p.start_timestamp`, params
-    );
-    const weeks = new Map();
-    for (const row of rows) {
-      const week = weeks.get(row.period_id) || { periodId: row.period_id, season: row.season_name, start: Number(row.start_timestamp), runs: 0, levelTotal: 0, highestKey: 0, specs: new Map() };
-      week.runs += 1; week.levelTotal += Number(row.level); week.highestKey = Math.max(week.highestKey, Number(row.level));
-      const roster = typeof row.roster === 'string' ? JSON.parse(row.roster) : row.roster;
-      for (const player of roster) {
-        const key = `${player.spec} ${player.class}`;
-        week.specs.set(key, (week.specs.get(key) || 0) + 1);
-      }
-      weeks.set(row.period_id, week);
+    const expansion = req.query.expansion || 'all';
+    if (expansion !== 'all' && !supportedExpansions.includes(expansion)) {
+      return res.status(400).json({ error: 'Unknown expansion.' });
     }
-    res.json([...weeks.values()].map((week) => {
-      const total = week.runs * 5;
-      return { periodId: week.periodId, season: week.season, start: week.start, runs: week.runs, highestKey: week.highestKey,
-        averageLevel: week.runs ? week.levelTotal / week.runs : 0,
-        diversity: giniValue(knownWeeklySpecs.map((key) => week.specs.get(key) || 0)),
-        specs: knownWeeklySpecs.map((key) => ({ key, share: total ? (week.specs.get(key) || 0) / total * 100 : 0 })) };
-    }));
+    const cacheKey = `${region}:${expansion}`;
+    const cached = historyResponseCache.get(cacheKey);
+    if (cached?.data && cached.expiresAt > Date.now()) return res.json(cached.data);
+    if (cached?.pending) return res.json(await cached.pending);
+
+    const filters = [];
+    const params = [];
+    if (region !== 'all') { filters.push('r.region = ?'); params.push(region); }
+    if (expansion !== 'all') { filters.push('p.season_name LIKE ?'); params.push(`${expansion}%`); }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const pending = (async () => {
+      const [rows] = await pool.execute(
+        `SELECT p.period_id, p.region, p.season_name, p.start_timestamp, r.level, r.roster
+         FROM weekly_periods p JOIN weekly_leaderboard_runs r ON r.period_id=p.period_id AND r.region=p.region
+         ${where} ORDER BY p.start_timestamp`, params
+      );
+      const weeks = new Map();
+      for (const row of rows) {
+        const week = weeks.get(row.period_id) || { periodId: row.period_id, season: row.season_name, start: Number(row.start_timestamp), runs: 0, levelTotal: 0, highestKey: 0, specs: new Map() };
+        week.runs += 1; week.levelTotal += Number(row.level); week.highestKey = Math.max(week.highestKey, Number(row.level));
+        const roster = typeof row.roster === 'string' ? JSON.parse(row.roster) : row.roster;
+        for (const player of roster) {
+          const key = `${player.spec} ${player.class}`;
+          week.specs.set(key, (week.specs.get(key) || 0) + 1);
+        }
+        weeks.set(row.period_id, week);
+      }
+      return [...weeks.values()].map((week) => {
+        const total = week.runs * 5;
+        return { periodId: week.periodId, season: week.season, start: week.start, runs: week.runs, highestKey: week.highestKey,
+          averageLevel: week.runs ? week.levelTotal / week.runs : 0,
+          diversity: giniValue(knownWeeklySpecs.map((key) => week.specs.get(key) || 0)),
+          specs: knownWeeklySpecs.map((key) => ({ key, share: total ? (week.specs.get(key) || 0) / total * 100 : 0 })) };
+      });
+    })();
+    historyResponseCache.set(cacheKey, { pending });
+    const result = await pending;
+    historyResponseCache.set(cacheKey, { data: result, expiresAt: Date.now() + historyResponseCacheTtlMs });
+    res.json(result);
   } catch (error) {
+    historyResponseCache.delete(`${req.query.region || 'all'}:${req.query.expansion || 'all'}`);
     res.status(503).json({ error: 'Could not load weekly history.', detail: error.message });
   }
 });
