@@ -334,6 +334,7 @@ function zoomHistoryAtPointer(event) {
 }
 function resetHistoryZoom(event) {
   delete event.currentTarget.dataset.historyZoomDone;
+  event.currentTarget.scrollLeft = 0;
 }
 function moveHistoryTooltip(event) {
   if (!historyTooltip.value) return;
