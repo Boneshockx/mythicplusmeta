@@ -308,7 +308,10 @@ body{background:radial-gradient(ellipse at 78% 0%,#18283b 0,transparent 36rem),#
 .dungeon-table tr.dungeon-easiest-row{background:#1a2a1c}
 .dungeon-table tr.dungeon-hardest-row{background:#2a1d25}
 .dungeon-table tr.dungeon-fastest-row{box-shadow:inset 3px 0 #3284aa}
-.role-spec-chart{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px}
+.role-spec-chart{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;align-content:start}
+.comp-labels{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.comp-labels .sample-badge,.region-dominance-badge{width:max-content;font-size:9px}
+.region-dominance-badge{padding:3px 6px;border-radius:4px;background:#25364b;color:#b9d9ff;font-weight:700;letter-spacing:.04em}
 .role-spec-row{display:grid;gap:5px;min-width:0}
 .role-spec-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;color:#e7edf5;text-transform:capitalize}
 .role-spec-heading>b{font-size:12px}

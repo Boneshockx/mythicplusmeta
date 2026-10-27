@@ -97,20 +97,6 @@ const sortedWeeklyComps = computed(() => {
 });
 const weeklyTotalPages = computed(() => Math.max(1, Math.ceil(sortedWeeklyComps.value.length / 20)));
 const visibleWeeklyComps = computed(() => sortedWeeklyComps.value.slice((weeklyPage.value - 1) * 20, weeklyPage.value * 20));
-const diversityPoints = computed(() => {
-  const points = data.value?.diversity || [];
-  if (!points.length) return [];
-  const minX = points[0].level;
-  const maxX = points[points.length - 1].level || minX + 1;
-  const maxY = Math.max(0.1, ...points.map((p) => p.gini));
-  return points.map((point) => ({
-    ...point,
-    x: 48 + ((point.level - minX) / Math.max(1, maxX - minX)) * 704,
-    y: 212 - (point.gini / maxY) * 166,
-    labelY: 236
-  }));
-});
-const diversityLine = computed(() => diversityPoints.value.map((p) => `${p.x},${p.y}`).join(' '));
 const historyBars = computed(() => {
   const rows = historyRows.value;
   if (!rows.length) return { bars: [] };
@@ -160,7 +146,7 @@ const selectedHistoryExpansion = computed(() => historyExpansionGroups.value.fin
 watch(historyExpansionGroups, (groups) => {
   if (!groups.some((group) => group.name === historyExpansion.value)) historyExpansion.value = groups[0]?.name || '';
 }, { immediate: true });
-const weeklyDiversityRows = computed(() => [...(weeklyData.value?.diversity || [])].sort((a, b) => b.level - a.level).map((point) => {
+const makeDiversityRows = (points = []) => [...points].sort((a, b) => b.level - a.level).map((point) => {
   const specs = (point.specs || []).filter((spec) => spec.share > 0);
   const topSpecs = new Set([...specs].sort((a, b) => b.share - a.share).slice(0, 5).map((spec) => spec.key));
   return {
@@ -171,7 +157,9 @@ const weeklyDiversityRows = computed(() => [...(weeklyData.value?.diversity || [
       return { key: spec.key, spec: specName, className, share: spec.share, isTopFive: topSpecs.has(spec.key), color: classColors[className] || '#68778b' };
     })
   };
-}));
+});
+const weeklyDiversityRows = computed(() => makeDiversityRows(weeklyData.value?.diversity || []));
+const dashboardDiversityRows = computed(() => makeDiversityRows(data.value?.diversity || []));
 const makeRoleRepresentation = (specs = []) => {
   const roles = ['ranged', 'melee', 'healer', 'tank'];
   const groups = new Map(roles.map((role) => [role, { role, appearances: 0, specs: [] }]));
@@ -205,6 +193,7 @@ const hoveredClass = ref(null);
 const selectedClass = ref(null);
 const weeklyHoveredClass = ref(null);
 const weeklySelectedClass = ref(null);
+const rememberedClass = ref(null);
 const classPieCircumference = 2 * Math.PI * 78;
 const buildClassPieSegments = (classes) => {
   const total = classes.reduce((sum, item) => sum + item.appearances, 0);
@@ -241,10 +230,15 @@ const displayedClass = computed(() => {
   const classes = data.value?.classes || [];
   return classes.find((item) => item.class === hoveredClass.value)
     || classes.find((item) => item.class === selectedClass.value)
+    || classes.find((item) => item.class === rememberedClass.value)
     || classes[0] || null;
 });
 const displayedWeeklyClass = computed(() => weeklyClasses.value.find((item) => item.class === weeklyHoveredClass.value)
-  || weeklyClasses.value.find((item) => item.class === weeklySelectedClass.value) || weeklyClasses.value[0] || null);
+  || weeklyClasses.value.find((item) => item.class === weeklySelectedClass.value)
+  || weeklyClasses.value.find((item) => item.class === rememberedClass.value) || weeklyClasses.value[0] || null);
+function rememberClass(className) {
+  rememberedClass.value = className;
+}
 const hardestWeeklyDungeon = computed(() => weeklyData.value?.dungeons?.at(-1) || null);
 const fastestWeeklyDungeon = computed(() => (weeklyData.value?.dungeons || [])
   .filter((dungeon) => dungeon.averageTimeRemainingPct !== null && dungeon.averageTimeRemainingPct !== undefined)
@@ -555,7 +549,7 @@ onMounted(() => {
             <div class="class-pie-wrap">
               <svg class="class-pie-chart" viewBox="0 0 240 240" role="group" aria-label="Player slot share by class">
                 <circle class="class-pie-track" cx="120" cy="120" r="78" />
-                <circle v-for="segment in weeklyClassPieSegments" :key="segment.class" class="class-pie-segment" :class="{ active: displayedWeeklyClass?.class === segment.class }" cx="120" cy="120" r="78" :stroke="segment.color" :stroke-dasharray="`${segment.length} ${classPieCircumference}`" :stroke-dashoffset="-segment.offset" :aria-label="`${segment.class}: ${segment.share.toFixed(1)}% of player slots`" role="button" tabindex="0" @mouseenter="weeklyHoveredClass = segment.class" @mouseleave="weeklyHoveredClass = null" @focus="weeklyHoveredClass = segment.class" @blur="weeklyHoveredClass = null" @click="weeklySelectedClass = segment.class"><title>{{ segment.class }}: {{ segment.share.toFixed(1) }}% of player slots</title></circle>
+                <circle v-for="segment in weeklyClassPieSegments" :key="segment.class" class="class-pie-segment" :class="{ active: displayedWeeklyClass?.class === segment.class }" cx="120" cy="120" r="78" :stroke="segment.color" :stroke-dasharray="`${segment.length} ${classPieCircumference}`" :stroke-dashoffset="-segment.offset" :aria-label="`${segment.class}: ${segment.share.toFixed(1)}% of player slots`" role="button" tabindex="0" @mouseenter="weeklyHoveredClass = segment.class; rememberClass(segment.class)" @mouseleave="weeklyHoveredClass = null" @focus="weeklyHoveredClass = segment.class; rememberClass(segment.class)" @blur="weeklyHoveredClass = null" @click="weeklySelectedClass = segment.class; rememberClass(segment.class)"><title>{{ segment.class }}: {{ segment.share.toFixed(1) }}% of player slots</title></circle>
                 <text v-for="segment in weeklyClassPieSegments.filter((item) => item.length >= 38)" :key="`${segment.class}-share`" class="class-pie-label" :x="segment.labelX" :y="segment.labelY" :transform="`rotate(90 ${segment.labelX} ${segment.labelY})`" text-anchor="middle" dominant-baseline="central">{{ segment.share.toFixed(1) }}%</text>
               </svg>
               <div v-if="displayedWeeklyClass" class="class-pie-center"><b>{{ displayedWeeklyClass.class }}</b><strong>{{ displayedWeeklyClass.pickRate.toFixed(1) }}%</strong><small>of player slots</small></div>
@@ -667,7 +661,7 @@ onMounted(() => {
             <div class="top-meta-list">
               <div v-for="comp in data.topComps.slice(0, 3)" :key="comp.composition.map((x) => x.spec + x.class).join('|')" class="top-meta-row">
                 <b class="top-meta-rank">{{ String(comp.metaRank).padStart(2, '0') }}</b>
-                <div class="top-meta-content"><div class="party-composition"><div v-for="(player, index) in comp.composition" :key="index" class="spec-avatar" :style="classStyle(player.class)"><img :src="specIcon(player.spec, player.class)" alt="" loading="lazy" @error="handleIconError($event, player.class)"/><span>{{ player.spec }}</span></div></div><small>{{ comp.count.toLocaleString() }} runs | {{ comp.share.toFixed(1) }}% share | {{ comp.averageLevel.toFixed(1) }} avg key</small></div>
+                <div class="top-meta-content"><div class="party-composition"><div v-for="(player, index) in comp.composition" :key="index" class="spec-avatar" :style="classStyle(player.class)"><img :src="specIcon(player.spec, player.class)" alt="" loading="lazy" @error="handleIconError($event, player.class)"/><span>{{ player.spec }}</span></div></div><small>{{ comp.count.toLocaleString() }} runs | {{ comp.share.toFixed(1) }}% share | {{ comp.averageLevel.toFixed(1) }} avg key</small><span class="comp-labels"><small class="sample-badge" :class="comp.established ? 'established' : 'low-sample'">{{ comp.established ? 'Established' : 'Low sample' }}</small><small v-if="comp.dominantRegion" class="region-dominance-badge">{{ comp.dominantRegion.toUpperCase() }} dominant · {{ comp.dominantRegionShare.toFixed(0) }}%</small></span></div>
                 <strong class="top-meta-score">{{ comp.metaScore.toFixed(1) }}</strong>
               </div>
             </div>
@@ -695,17 +689,9 @@ onMounted(() => {
             </div></article>
 
           <article class="panel diversity-panel">
-            <div class="panel-heading"><div><span class="eyebrow">SPECIALIZATION DIVERSITY</span><h2>Meta concentration by key</h2><p>Gini index for spec appearances. Higher means picks are concentrated in fewer specs.</p></div></div>
-            <div v-if="diversityPoints.length" class="chart-wrap">
-              <svg class="diversity-chart" viewBox="0 0 800 260" role="img" aria-label="Specialization diversity Gini coefficient by key level">
-                <g class="chart-grid"><line v-for="y in [46, 101, 157, 212]" :key="y" x1="48" :y1="y" x2="752" :y2="y" /></g>
-                <text v-for="(label, index) in ['1.0', '0.67', '0.33', '0']" :key="label" x="8" :y="[50,105,161,216][index]">{{ label }}</text>
-                <polyline :points="diversityLine" fill="none" stroke="#80b918" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-                <g v-for="point in diversityPoints" :key="point.level" class="chart-point"><circle :cx="point.x" :cy="point.y" r="5"><title>+{{ point.level }} · Gini {{ point.gini.toFixed(2) }} · {{ point.runs }} runs</title></circle><text :x="point.x" :y="point.labelY" text-anchor="middle">+{{ point.level }}</text></g>
-              </svg>
-            </div>
+            <div class="panel-heading"><div><span class="eyebrow">DIVERSITY PER KEY LEVEL</span><h2>Which specs make up each key?</h2><p>Each bar splits all five-player slots by spec. Hover a segment to inspect its representation.</p></div></div>
+            <div v-if="dashboardDiversityRows.length" class="weekly-diversity-chart"><div v-for="point in dashboardDiversityRows" :key="point.level" class="weekly-diversity-row"><div class="weekly-diversity-key"><b>+{{ point.level }}</b><small>{{ point.runs.toLocaleString() }} runs</small></div><span class="diversity-bar-wrap" @mouseenter="updateHistoryScrollHint" @focusin="updateHistoryScrollHint"><span class="diversity-bar-track" @mousemove="zoomHistoryFromTrack" @scroll="updateHistoryScrollHint" @wheel.prevent="scrollHistoryTrack" @mouseleave="resetHistoryZoom($event)"><span v-for="segment in point.segments" :key="segment.key" class="diversity-bar-segment" :class="{ 'top-five-spec': segment.isTopFive }" :style="{ width: `${segment.share}%`, background: segment.color }" :aria-label="`${segment.spec} ${segment.className}: ${segment.share.toFixed(1)}% at key +${point.level}`" role="img" tabindex="0" @mouseenter="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @mousemove="moveHistoryTooltip" @mouseleave="historyTooltip = null" @focus="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @blur="historyTooltip = null"><img :src="specIcon(segment.spec, segment.className)" alt="" loading="lazy" @error="handleIconError($event, segment.className)"/><small>{{ segment.share.toFixed(1) }}%</small></span></span><span class="diversity-scroll-hint diversity-scroll-left" aria-hidden="true">‹ Scroll</span><span class="diversity-scroll-hint diversity-scroll-right" aria-hidden="true">Scroll ›</span></span><div class="weekly-diversity-gini"><small>GINI</small><b>{{ point.gini.toFixed(2) }}</b></div></div></div>
             <div v-else class="empty-cell">Import runs to build the diversity chart.</div>
-            <div class="gini-legend"><span><i class="low"></i>More evenly distributed</span><span><i class="high"></i>More concentrated</span></div>
           </article>
         </section>
 
@@ -715,7 +701,7 @@ onMounted(() => {
             <div class="class-pie-wrap">
               <svg class="class-pie-chart" viewBox="0 0 240 240" role="group" aria-label="Player slot share by class">
                 <circle class="class-pie-track" cx="120" cy="120" r="78" />
-                <circle v-for="segment in classPieSegments" :key="segment.class" class="class-pie-segment" :class="{ active: displayedClass?.class === segment.class }" cx="120" cy="120" r="78" :stroke="segment.color" :stroke-dasharray="`${segment.length} ${classPieCircumference}`" :stroke-dashoffset="-segment.offset" :aria-label="`${segment.class}: ${segment.share.toFixed(1)}% of player slots`" role="button" tabindex="0" @mouseenter="hoveredClass = segment.class" @mouseleave="hoveredClass = null" @focus="hoveredClass = segment.class" @blur="hoveredClass = null" @click="selectedClass = segment.class"><title>{{ segment.class }}: {{ segment.share.toFixed(1) }}% of player slots</title></circle>
+                <circle v-for="segment in classPieSegments" :key="segment.class" class="class-pie-segment" :class="{ active: displayedClass?.class === segment.class }" cx="120" cy="120" r="78" :stroke="segment.color" :stroke-dasharray="`${segment.length} ${classPieCircumference}`" :stroke-dashoffset="-segment.offset" :aria-label="`${segment.class}: ${segment.share.toFixed(1)}% of player slots`" role="button" tabindex="0" @mouseenter="hoveredClass = segment.class; rememberClass(segment.class)" @mouseleave="hoveredClass = null" @focus="hoveredClass = segment.class; rememberClass(segment.class)" @blur="hoveredClass = null" @click="selectedClass = segment.class; rememberClass(segment.class)"><title>{{ segment.class }}: {{ segment.share.toFixed(1) }}% of player slots</title></circle>
                 <text v-for="segment in classPieSegments.filter((item) => item.length >= 38)" :key="`${segment.class}-share`" class="class-pie-label" :x="segment.labelX" :y="segment.labelY" :transform="`rotate(90 ${segment.labelX} ${segment.labelY})`" text-anchor="middle" dominant-baseline="central">{{ segment.share.toFixed(1) }}%</text>
               </svg>
               <div v-if="displayedClass" class="class-pie-center"><b>{{ displayedClass.class }}</b><strong>{{ displayedClass.pickRate.toFixed(1) }}%</strong><small>of player slots</small></div>

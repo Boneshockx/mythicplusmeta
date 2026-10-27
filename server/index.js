@@ -104,9 +104,10 @@ app.get('/api/meta/summary', async (req, res) => {
         name: p.name, realm: p.realm
       })).sort((a, b) => roleOrder[a.role] - roleOrder[b.role] || a.class.localeCompare(b.class) || a.spec.localeCompare(b.spec));
       const key = composition.map((p) => `${p.spec} ${p.class}`).join('|') || 'Composition unavailable';
-      const existing = comps.get(key) || { composition: composition.map(({ name, realm, ...p }) => p), count: 0, regions: new Set(), dungeons: new Map(), maxLevel: 0, levelTotal: 0 };
+      const existing = comps.get(key) || { composition: composition.map(({ name, realm, ...p }) => p), count: 0, regions: new Set(), regionCounts: new Map(), dungeons: new Map(), maxLevel: 0, levelTotal: 0 };
       existing.count += 1;
       existing.regions.add(run.region);
+      existing.regionCounts.set(run.region, (existing.regionCounts.get(run.region) || 0) + 1);
       const dungeonKey = normalizeDungeonName(run.dungeon);
       existing.dungeons.set(dungeonKey, (existing.dungeons.get(dungeonKey) || 0) + 1);
       existing.maxLevel = Math.max(existing.maxLevel, level);
@@ -167,7 +168,10 @@ app.get('/api/meta/summary', async (req, res) => {
       averageLevel: x.count ? x.levelTotal / x.count : 0,
       share: sampleSize ? x.count / sampleSize * 100 : 0,
       established: x.count >= minRunsForEstablished,
-      regions: [...x.regions], dungeons: [...x.dungeons].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
+      regions: [...x.regions],
+      dominantRegion: [...x.regionCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null,
+      dominantRegionShare: x.count ? Math.max(...x.regionCounts.values()) / x.count * 100 : 0,
+      dungeons: [...x.dungeons].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count)
     })));
     const specList = [...specs.values()].map((x) => ({ ...x, pickRate: totalCharacters ? x.appearances / totalCharacters * 100 : 0 }))
       .sort((a, b) => b.appearances - a.appearances);
@@ -324,8 +328,9 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       const compMembers = roster.map((player) => ({ spec: player.spec || 'Unknown', class: player.class || 'Unknown', role: normalizeWeeklyRole(player.role) }))
         .sort((a, b) => ['tank', 'healer', 'dps'].indexOf(a.role) - ['tank', 'healer', 'dps'].indexOf(b.role) || a.class.localeCompare(b.class) || a.spec.localeCompare(b.spec));
       const compKey = compMembers.map((p) => `${p.spec} ${p.class}`).join('|');
-      const comp = comps.get(compKey) || { composition: compMembers, count: 0, levelTotal: 0, maxLevel: 0 };
+      const comp = comps.get(compKey) || { composition: compMembers, count: 0, levelTotal: 0, maxLevel: 0, regionCounts: new Map() };
       comp.count += 1; comp.levelTotal += Number(run.level); comp.maxLevel = Math.max(comp.maxLevel, Number(run.level));
+      comp.regionCounts.set(run.region, (comp.regionCounts.get(run.region) || 0) + 1);
       comps.set(compKey, comp);
       const dungeonKey = normalizeDungeonName(run.dungeon);
       const dungeon = dungeons.get(dungeonKey) || { dungeon: run.dungeon, runs: 0, levelTotal: 0, maxLevel: 0, timedRuns: 0, clearTimeTotal: 0, remainingTimeTotalMs: 0, maxTimeRemainingMs: null, fastestRunLevel: null };
@@ -361,7 +366,9 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     const topComps = calculateMetaRanking([...comps.values()].map((x) => ({
       composition: x.composition, count: x.count, averageLevel: x.count ? x.levelTotal / x.count : 0,
       maxLevel: x.maxLevel, share: runs.length ? x.count / runs.length * 100 : 0,
-      established: x.count >= minEstablished
+      established: x.count >= minEstablished,
+      dominantRegion: [...x.regionCounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null,
+      dominantRegionShare: x.count ? Math.max(...x.regionCounts.values()) / x.count * 100 : 0
     })));
     const fastestHighestRun = runs.filter((run) => Number(run.level) === maxKey).map((run) => {
       const payload = typeof run.payload === 'string' ? JSON.parse(run.payload) : run.payload;
