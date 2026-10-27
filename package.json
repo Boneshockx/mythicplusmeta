@@ -10,6 +10,7 @@
     "db:setup": "node server/apply-schema.js",
     "sync": "node server/sync.js",
     "sync:weekly": "node server/sync-weekly.js",
+    "sync:daily": "node server/sync-daily.js",
     "sync:history": "node server/sync-history.js"
   },
   "dependencies": {
