@@ -37,6 +37,27 @@ function timestamp(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function ensureHistoryCheckpointTable() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS history_sync_checkpoints (
+    region VARCHAR(8) NOT NULL,
+    season_id INT UNSIGNED NOT NULL,
+    dungeon_id INT UNSIGNED NOT NULL,
+    dungeon VARCHAR(160) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    last_page SMALLINT UNSIGNED NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (region, season_id, dungeon_id)
+  ) ENGINE=InnoDB`);
+}
+
+async function setHistoryCheckpoint(region, seasonId, dungeonId, dungeon, status, lastPage = null) {
+  await pool.execute(
+    `INSERT INTO history_sync_checkpoints (region, season_id, dungeon_id, dungeon, status, last_page)
+     VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE dungeon=VALUES(dungeon), status=VALUES(status), last_page=VALUES(last_page)`,
+    [region, seasonId, dungeonId, dungeon, status, lastPage]
+  );
+}
+
 async function loadRaiderIoSeasons() {
   const seasons = new Map();
   for (const expansionId of EXPANSION_IDS) {
@@ -204,10 +225,37 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
   let unmapped = 0;
   let persisted = 0;
   let failedScans = 0;
+  let skippedScans = 0;
 
   const scanDungeon = async ([dungeonIndex, dungeon]) => {
     const dungeonName = dungeon.name || dungeon.slug;
     const dungeonKey = dungeon.slug || dungeon.name;
+    const dungeonId = dungeonIdFor(dungeonName);
+    const [checkpointRows] = await pool.execute(
+      'SELECT status FROM history_sync_checkpoints WHERE region = ? AND season_id = ? AND dungeon_id = ?',
+      [region, season.id, dungeonId]
+    );
+    if (checkpointRows[0]?.status === 'complete') {
+      skippedScans += 1;
+      console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; a completed scan is already checkpointed.`);
+      return;
+    }
+    if (!checkpointRows.length) {
+      // Earlier importer versions saved runs only after an entire dungeon scan
+      // succeeded. Existing rows therefore let us preserve that completed work.
+      const [existingRows] = await pool.execute(
+        `SELECT COUNT(*) AS row_count FROM weekly_leaderboard_runs
+         WHERE region = ? AND connected_realm_id = ? AND season_id = ? AND dungeon_id = ?`,
+        [region, RAIDER_IO_REALM_ID, season.id, dungeonId]
+      );
+      if (Number(existingRows[0]?.row_count) > 0) {
+        skippedScans += 1;
+        await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'complete', null);
+        console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; existing imported rows came from a completed earlier scan.`);
+        return;
+      }
+    }
+    await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'running', null);
     const dungeonStartedAt = Date.now();
     let pagesLoaded = 0;
     let reachedPageCap = true;
@@ -259,6 +307,9 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       if (page === 0 || (page + 1) % 10 === 0 || page === MAX_RIO_PAGE) {
         console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: through page ${page}/${MAX_RIO_PAGE}; ${dungeonReceived} API rows and ${dungeonAssigned} assigned to periods.`);
       }
+      if ((page + 1) % 10 === 0 || page === MAX_RIO_PAGE) {
+        await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'running', page);
+      }
       if (requestDelay) await sleep(requestDelay);
     }
 
@@ -270,7 +321,6 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       const runMap = periodGroups.get(dungeonName);
       if (!runMap?.size) continue;
       const runs = [...runMap.values()].sort((a, b) => b.score - a.score || b.level - a.level || timestamp(b.completedAt) - timestamp(a.completedAt));
-      const dungeonId = dungeonIdFor(dungeonName);
       const values = runs.map((run, index) => [
         periodId, region, RAIDER_IO_REALM_ID, season.id, dungeonId, dungeonName, index + 1,
         run.level || 0, run.score || 0, run.completedAt ? new Date(timestamp(run.completedAt)) : null,
@@ -287,6 +337,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       }
       dungeonSaved += values.length;
     }
+    await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, failedPage ? 'incomplete' : 'complete', pagesLoaded ? pagesLoaded - 1 : null);
     persisted += dungeonSaved;
     console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: ${failedPage ? `partial scan stopped at page ${failedPage.page}` : 'finished scan'}; loaded ${pagesLoaded} page(s), saved ${dungeonSaved} run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
   };
@@ -299,14 +350,15 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
   };
   await Promise.all(Array.from({ length: Math.min(rioConcurrency, dungeons.length) }, worker));
 
-  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, saved ${persisted}, could not map ${unmapped} to a known period, incomplete dungeon scans ${failedScans}.`);
-  return { runs: persisted, unmapped, failedScans };
+  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, saved ${persisted}, skipped ${skippedScans} completed dungeon scan(s), could not map ${unmapped} to a known period, incomplete dungeon scans ${failedScans}.`);
+  return { runs: persisted, unmapped, failedScans, skippedScans };
 }
 
 try {
   const startedAt = Date.now();
   console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}.`);
   if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
+  else await ensureHistoryCheckpointTable();
   console.log(`[history] Period labels/windows will come from Blizzard season and period data; run samples will come from Raider.IO.`);
   console.log(`[history] Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; ${requestDelay}ms pause between pages; ${rioConcurrency} concurrent dungeon scans.`);
 
@@ -320,6 +372,7 @@ try {
   let totalRuns = 0;
   let skippedSeasons = 0;
   let failedScans = 0;
+  let skippedDungeonScans = 0;
   if (!labelsOnly) {
     for (const region of REGIONS) {
       const data = regionData.get(region);
@@ -334,6 +387,7 @@ try {
         const result = await importSeasonRegion(region, season, rioSeason, data.periods);
         totalRuns += result.runs;
         failedScans += result.failedScans;
+        skippedDungeonScans += result.skippedScans;
       }
     }
   }
@@ -341,10 +395,10 @@ try {
   if (labelsOnly) {
     console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Refreshed season names and period windows without importing runs.`);
   } else if (failedScans) {
-    console.warn(`[history] Finished in ${Math.round((Date.now() - startedAt) / 1000)}s with ${failedScans} incomplete dungeon scan(s). Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without Raider.IO metadata. Rerun the command to retry incomplete data.`);
+    console.warn(`[history] Finished in ${Math.round((Date.now() - startedAt) / 1000)}s with ${failedScans} incomplete dungeon scan(s). Saved ${totalRuns} run rows, skipped ${skippedDungeonScans} completed dungeon scan(s), and skipped ${skippedSeasons} region/season run imports without Raider.IO metadata. Rerun the command to retry incomplete data.`);
     process.exitCode = 1;
   } else {
-    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved ${totalRuns} run rows; skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
+    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved ${totalRuns} new run rows, skipped ${skippedDungeonScans} already completed dungeon scan(s), and skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
   }
 } catch (error) {
   console.error(`[history] Import failed: ${error.stack || error.message}`);
