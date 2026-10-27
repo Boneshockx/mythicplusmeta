@@ -271,7 +271,7 @@ app.get('/api/meta/periods', async (req, res) => {
     const where = region === 'all' ? '' : 'WHERE p.region = ?';
     const [periods] = await pool.execute(
       `SELECT p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp,
-        COUNT(r.id) AS run_count, COUNT(DISTINCT r.dungeon_id) AS dungeon_count
+        COUNT(r.id) AS run_count, COUNT(DISTINCT LOWER(TRIM(r.dungeon))) AS dungeon_count
        FROM weekly_periods p LEFT JOIN weekly_leaderboard_runs r
          ON r.period_id = p.period_id AND r.region = p.region
        ${where} GROUP BY p.period_id, p.region, p.season_id, p.season_name, p.start_timestamp, p.end_timestamp
