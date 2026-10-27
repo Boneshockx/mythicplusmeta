@@ -80,6 +80,7 @@ const weeklySortBy = ref(null);
 const weeklySortDirection = ref('desc');
 const weeklyPage = ref(1);
 const historyRegion = ref('all');
+const historyExpansion = ref('Midnight');
 const weeklyLoading = ref(false);
 const weeklyError = ref('');
 const historyTooltip = ref(null);
@@ -136,6 +137,36 @@ const historyBars = computed(() => {
   });
   return { bars };
 });
+const historyExpansionGroups = computed(() => {
+  const expansionOrder = ['Legion', 'Battle for Azeroth', 'Shadowlands', 'Dragonflight', 'The War Within', 'Midnight'];
+  const expansionRank = (name) => Math.max(-1, expansionOrder.indexOf(name));
+  const abbreviations = { Legion: 'LEG', 'Battle for Azeroth': 'BFA', Shadowlands: 'SL', Dragonflight: 'DF', 'The War Within': 'TWW', Midnight: 'MID' };
+  const expansions = new Map();
+  for (const bar of historyBars.value.bars) {
+    const seasonName = String(bar.season || 'Unknown season');
+    const match = seasonName.match(/^(.*?)\s+(?:Season\s*|S)(\d+)$/i);
+    const expansionName = match?.[1] || seasonName;
+    const seasonNumber = match ? Number(match[2]) : 0;
+    const expansion = expansions.get(expansionName) || { name: expansionName, seasons: new Map() };
+    const seasonKey = `${expansionName}:${seasonNumber || seasonName}`;
+    const season = expansion.seasons.get(seasonKey) || {
+      name: seasonNumber ? `${expansionName} Season ${seasonNumber}` : seasonName,
+      code: seasonNumber ? `${abbreviations[expansionName] || expansionName.slice(0, 3).toUpperCase()}${seasonNumber}` : seasonName,
+      number: seasonNumber, bars: []
+    };
+    season.bars.push(bar);
+    expansion.seasons.set(seasonKey, season);
+    expansions.set(expansionName, expansion);
+  }
+  return [...expansions.values()]
+    .sort((a, b) => expansionRank(b.name) - expansionRank(a.name) || a.name.localeCompare(b.name))
+    .map((expansion) => ({ ...expansion, seasons: [...expansion.seasons.values()].sort((a, b) => b.number - a.number || b.bars[0].start - a.bars[0].start) }));
+});
+const selectedHistoryExpansion = computed(() => historyExpansionGroups.value.find((item) => item.name === historyExpansion.value)
+  || historyExpansionGroups.value[0] || null);
+watch(historyExpansionGroups, (groups) => {
+  if (!groups.some((group) => group.name === historyExpansion.value)) historyExpansion.value = groups[0]?.name || '';
+}, { immediate: true });
 const weeklyDiversityRows = computed(() => [...(weeklyData.value?.diversity || [])].sort((a, b) => b.level - a.level).map((point) => {
   const specs = (point.specs || []).filter((spec) => spec.share > 0);
   const topSpecs = new Set([...specs].sort((a, b) => b.share - a.share).slice(0, 5).map((spec) => spec.key));
@@ -562,26 +593,38 @@ onMounted(() => {
         <section class="panel history-panel">
           <div class="panel-heading">
             <div><span class="eyebrow">WEEKLY SPEC REPRESENTATION</span><h2>How the meta shifted</h2><p>Each bar shows the share of player slots for each specialization. Periods combine imported regions; choose a region to view its reset weeks alone.</p></div>
-            <label class="level-filter">Region
-              <select v-model="historyRegion" @change="loadHistory">
-                <option value="all">All imported regions</option>
-                <option v-for="item in regions.filter((x) => x.id !== 'all')" :key="item.id" :value="item.id">{{ item.label }}</option>
-              </select>
-            </label>
+            <div class="history-filters">
+              <label class="level-filter">Expansion
+                <select v-model="historyExpansion">
+                  <option v-for="expansion in historyExpansionGroups" :key="expansion.name" :value="expansion.name">{{ expansion.name }}</option>
+                </select>
+              </label>
+              <label class="level-filter">Region
+                <select v-model="historyRegion" @change="loadHistory">
+                  <option value="all">All imported regions</option>
+                  <option v-for="item in regions.filter((x) => x.id !== 'all')" :key="item.id" :value="item.id">{{ item.label }}</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <div class="history-bars" role="group" aria-label="Stacked bars showing specialization representation by weekly period">
-            <div class="history-bar-header"><span>PERIOD</span><span>PLAYER SLOT SHARE</span><span>RUNS / AVG KEY / HIGHEST / GINI</span></div>
-            <button v-for="week in historyBars.bars" :key="week.periodId" class="history-bar-row" @click="navigatePage('week', week.periodId)">
-              <span class="history-bar-label"><b>{{ week.periodId }}</b><small>{{ new Date(week.start).toLocaleDateString() }}</small></span>
-              <span class="history-bar-track-wrap" @mouseenter="updateHistoryScrollHint" @focusin="updateHistoryScrollHint" @mousemove="updateHistoryScrollHint">
-              <span class="history-bar-track" @scroll="updateHistoryScrollHint" @wheel.prevent="scrollHistoryTrack" @mouseleave="resetHistoryZoom($event)">
-                <span v-for="segment in week.segments" :key="segment.key" class="history-bar-segment" :class="{ 'top-five-spec': segment.isTopFive }" :style="{ width: `${segment.share}%`, background: segment.color }" :aria-label="`${segment.spec} ${segment.className}: ${segment.share.toFixed(1)}%`" role="img" tabindex="0" @mouseenter="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @mousemove="moveHistoryTooltip" @mouseleave="historyTooltip = null" @focus="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @blur="historyTooltip = null"><img :src="specIcon(segment.spec, segment.className)" alt="" loading="lazy" @error="handleIconError($event, segment.className)"/><small>{{ segment.share.toFixed(1) }}%</small></span>
-              </span>
-              <span class="history-scroll-hint history-scroll-hint-left" aria-hidden="true">‹ Scroll</span><span class="history-scroll-hint history-scroll-hint-right" aria-hidden="true">Scroll ›</span>
-              </span>
-              <span class="history-bar-stats"><b>{{ week.runs.toLocaleString() }}</b><i>/</i>{{ week.averageLevel.toFixed(1) }}<i>/</i><strong>+{{ week.highestKey }}</strong><i>/</i><em>{{ week.diversity.toFixed(2) }}</em></span>
-            </button>
-          </div>
+          <template v-if="selectedHistoryExpansion">
+            <section v-for="season in selectedHistoryExpansion.seasons" :key="season.name" class="history-season-section">
+              <h3 class="history-season-heading"><span>{{ season.code }}</span><small>{{ season.name }} · {{ season.bars.length }} periods</small></h3>
+              <div class="history-bars" role="group" :aria-label="`${season.name} specialization representation by weekly period`">
+                <div class="history-bar-header"><span>PERIOD</span><span>PLAYER SLOT SHARE</span><span>RUNS / AVG KEY / HIGHEST / GINI</span></div>
+                <button v-for="week in season.bars" :key="week.periodId" class="history-bar-row" @click="navigatePage('week', week.periodId)">
+                  <span class="history-bar-label"><b>{{ week.periodId }}</b><small>{{ new Date(week.start).toLocaleDateString() }}</small></span>
+                  <span class="history-bar-track-wrap" @mouseenter="updateHistoryScrollHint" @focusin="updateHistoryScrollHint" @mousemove="updateHistoryScrollHint">
+                    <span class="history-bar-track" @scroll="updateHistoryScrollHint" @wheel.prevent="scrollHistoryTrack" @mouseleave="resetHistoryZoom($event)">
+                      <span v-for="segment in week.segments" :key="segment.key" class="history-bar-segment" :class="{ 'top-five-spec': segment.isTopFive }" :style="{ width: `${segment.share}%`, background: segment.color }" :aria-label="`${segment.spec} ${segment.className}: ${segment.share.toFixed(1)}%`" role="img" tabindex="0" @mouseenter="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @mousemove="moveHistoryTooltip" @mouseleave="historyTooltip = null" @focus="zoomHistoryAtPointer($event); showHistoryTooltip($event, segment)" @blur="historyTooltip = null"><img :src="specIcon(segment.spec, segment.className)" alt="" loading="lazy" @error="handleIconError($event, segment.className)"/><small>{{ segment.share.toFixed(1) }}%</small></span>
+                    </span>
+                    <span class="history-scroll-hint history-scroll-hint-left" aria-hidden="true">‹ Scroll</span><span class="history-scroll-hint history-scroll-hint-right" aria-hidden="true">Scroll ›</span>
+                  </span>
+                  <span class="history-bar-stats"><b>{{ week.runs.toLocaleString() }}</b><i>/</i>{{ week.averageLevel.toFixed(1) }}<i>/</i><strong>+{{ week.highestKey }}</strong><i>/</i><em>{{ week.diversity.toFixed(2) }}</em></span>
+                </button>
+              </div>
+            </section>
+          </template>
         </section>
       </template>
       <div v-if="historyTooltip" class="history-spec-tooltip" :style="{ left: `${historyTooltip.left}px`, top: `${historyTooltip.top}px` }" role="status">
