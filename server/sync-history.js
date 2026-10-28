@@ -6,6 +6,7 @@ import { getMythicPlusStaticData, getRegionPeriods, getTopRuns, normalizeRun } f
 import { refreshPageCaches } from './refresh-page-caches.js';
 import { capHistoryPeriod, ensureBlizzardHistoryTables, importBlizzardHistoryRegion } from './sync-history-blizzard.js';
 import { legacyPeriodForRun, legacySeasonId } from './legacy-periods.js';
+import { isTimedRun } from './timed-runs.js';
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
@@ -309,6 +310,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
   let persisted = 0;
   let failedScans = 0;
   let skippedScans = 0;
+  let untimedSkipped = 0;
 
   const scanDungeon = async ([dungeonIndex, dungeon]) => {
     const dungeonName = dungeon.name || dungeon.slug;
@@ -368,6 +370,10 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
       for (const entry of entries) {
         const run = normalizeRun(entry, region, rioSeason.slug);
         if (!run?.completedAt || run.roster.length !== 5) continue;
+        if (!isTimedRun(run.payload)) {
+          untimedSkipped += 1;
+          continue;
+        }
         const period = periodForRun(run.completedAt, periodWindows, region, season, orderedPeriodWindows);
         if (!period || period.seasonId !== season.id) {
           unmapped += 1;
@@ -395,6 +401,12 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
       console.warn(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: reached Raider.IO page ${MAX_RIO_PAGE}; later pages are not available through this endpoint.`);
     }
     let dungeonSaved = 0;
+    if (!failedPage) {
+      await pool.execute(
+        'DELETE FROM weekly_leaderboard_runs WHERE region = ? AND season_id = ? AND dungeon_id = ? AND connected_realm_id = ?',
+        [region, season.id, dungeonId, RAIDER_IO_REALM_ID]
+      );
+    }
     for (const period of byPeriod.keys()) {
       const window = periodWindows.get(period);
       if (!window || !season.legacy) continue;
@@ -427,7 +439,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
     }
     await setRioCoverageCheckpoint(region, season.id, dungeonId, dungeonName, failedPage ? 'incomplete' : 'complete', lastSuccessfulPage);
     persisted += dungeonSaved;
-    console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: ${failedPage ? `partial scan stopped at page ${failedPage.page}` : 'finished scan'}; loaded ${pagesLoaded} page(s), saved ${dungeonSaved} run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
+    console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: ${failedPage ? `partial scan stopped at page ${failedPage.page}` : 'finished scan'}; loaded ${pagesLoaded} page(s), skipped ${untimedSkipped} untimed/unknown run(s) so far, saved ${dungeonSaved} timed run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
   };
   let nextDungeon = 0;
   const worker = async () => {
@@ -438,7 +450,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
   };
   await Promise.all(Array.from({ length: Math.min(rioConcurrency, dungeons.length) }, worker));
 
-  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, saved ${persisted}, skipped ${skippedScans} completed dungeon scan(s), could not map ${unmapped} to a known period, incomplete dungeon scans ${failedScans}.`);
+  console.log(`[history] ${region.toUpperCase()} ${season.name}: received ${received} API rows, skipped ${untimedSkipped} untimed/unknown runs, saved ${persisted} timed runs, skipped ${skippedScans} completed dungeon scan(s), could not map ${unmapped} to a known period, incomplete dungeon scans ${failedScans}.`);
   return { runs: persisted, unmapped, failedScans, skippedScans };
 }
 

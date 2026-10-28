@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { getRegionPeriods, getTopRuns, normalizeRun } from './rio.js';
+import { isTimedRun } from './timed-runs.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -52,6 +53,7 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
   const requestDelay = Math.max(0, Number(process.env.RIO_CN_REQUEST_DELAY_MS || 1200));
   const knownWindows = periodWindows(await getRegionPeriods());
   const runsById = new Map();
+  let untimedSkipped = 0;
   const [dungeonRows] = await pool.execute(
     'SELECT DISTINCT dungeon FROM weekly_leaderboard_runs WHERE season_id = ? ORDER BY dungeon', [seasonId]
   );
@@ -73,6 +75,10 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
       for (const entry of entries) {
         const run = normalizeRun(entry, 'cn', seasonSlug);
         if (!run || !run.completedAt || run.roster.length !== 5) continue;
+        if (!isTimedRun(run.payload)) {
+          untimedSkipped += 1;
+          continue;
+        }
         const window = windowForRun(run.completedAt, knownWindows);
         if (!window) continue;
         runsById.set(run.sourceRunId, { ...run, window, score: Number(run.score || run.level || 0) });
@@ -104,7 +110,7 @@ export async function syncChinaWeekly(pool, { seasonId: requestedSeasonId, perio
   }
 
   const referenceWindow = knownWindows.find((window) => window.start <= Date.now() && window.end > Date.now()) || knownWindows[0];
-  console.log(`CN Raider.IO: saving ${seasonPeriodIds.size} period(s), with ${runsById.size} unique runs available.`);
+  console.log(`CN Raider.IO: saving ${seasonPeriodIds.size} period(s), with ${runsById.size} unique timed runs available; skipped ${untimedSkipped} untimed/unknown runs.`);
   for (const periodId of [...seasonPeriodIds].sort((a, b) => a - b)) {
     const period = grouped.get(periodId) || { runs: [] };
     const sampledRuns = [...period.runs]

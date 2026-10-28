@@ -5,6 +5,8 @@ import { pool } from './db.js';
 import { blizzardData } from './blizzard.js';
 import { syncChinaWeekly } from './sync-weekly-cn.js';
 import { refreshPageCaches } from './refresh-page-caches.js';
+import { getMythicPlusStaticData } from './rio.js';
+import { dungeonTimeLimitMs, isTimedLeaderboardGroup } from './timed-runs.js';
 
 const args = new Map(process.argv.slice(2).filter((x) => x.startsWith('--')).map((x) => {
   const [key, ...rest] = x.slice(2).split('=');
@@ -19,6 +21,8 @@ const sampleLimit = Math.max(1, Number(args.get('limit') || process.env.BLIZZARD
 const concurrency = Math.max(1, Math.min(8, Number(args.get('concurrency') || process.env.BLIZZARD_CONCURRENCY || 5)));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const idFrom = (item) => Number(item?.id || item?.key?.href?.match(/\/(\d+)(?:\?.*)?$/)?.[1] || item?.href?.match(/\/(\d+)(?:\?.*)?$/)?.[1]) || 0;
+const normalizeDungeonName = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const RIO_EXPANSIONS = [6, 7, 8, 9, 10, 11];
 const specById = new Map([
   [62, ['Arcane', 'Mage', 'dps']], [63, ['Fire', 'Mage', 'dps']], [64, ['Frost', 'Mage', 'dps']],
   [65, ['Holy', 'Paladin', 'healer']], [66, ['Protection', 'Paladin', 'tank']], [70, ['Retribution', 'Paladin', 'dps']],
@@ -76,6 +80,28 @@ async function syncRegion(region) {
   if (!seasonId) throw new Error(`No Mythic+ season was returned for ${region}.`);
   const seasonData = season ? await blizzardData(region, `/data/wow/mythic-keystone/season/${seasonId}`) : null;
   const seasonName = seasonData?.name || season?.name || ({ 18: 'Midnight Season 2', 17: 'Midnight Season 1' }[seasonId]) || `Season ${seasonId}`;
+  const timerByDungeon = new Map();
+  for (const expansionId of RIO_EXPANSIONS) {
+    let staticData;
+    try { staticData = await getMythicPlusStaticData(expansionId); }
+    catch (error) {
+      console.warn(`${region.toUpperCase()} ${seasonName}: Raider.IO timers for expansion ${expansionId} unavailable (${error.message}).`);
+      continue;
+    }
+    const rioSeason = (staticData?.seasons || []).find((item) => Number(item.blizzard_season_id) === seasonId);
+    if (!rioSeason) continue;
+    for (const dungeon of rioSeason.dungeons || []) {
+      const timeLimitMs = dungeonTimeLimitMs(dungeon);
+      if (!timeLimitMs) continue;
+      const id = Number(dungeon.challenge_mode_id || dungeon.challengeModeID || dungeon.challengeModeId || dungeon.map_challenge_mode_id) || 0;
+      if (id) timerByDungeon.set(String(id), timeLimitMs);
+      for (const name of [dungeon.name, dungeon.slug, dungeon.short_name]) {
+        if (name) timerByDungeon.set(normalizeDungeonName(name), timeLimitMs);
+      }
+    }
+    break;
+  }
+  if (!timerByDungeon.size) console.warn(`${region.toUpperCase()} ${seasonName}: no dungeon timers were available; leaderboard groups without explicit timed status will be excluded.`);
   let periodIds = requestedPeriod ? [Number(requestedPeriod)] : (periodIndex?.periods || []).map(idFrom).filter(Boolean);
   periodIds = [...new Set(periodIds)].sort((a, b) => b - a);
   if (!requestedPeriod && !allPeriods) periodIds = periodIds.slice(0, 1);
@@ -88,6 +114,7 @@ async function syncRegion(region) {
   let failedBoards = 0;
   let inserted = 0;
   let checked = 0;
+  let untimedSkipped = 0;
   for (const periodId of periodIds) {
     console.log(`${region.toUpperCase()} period ${periodId}: loading period details from Blizzard.`);
     const period = await blizzardData(region, `/data/wow/mythic-keystone/period/${periodId}`);
@@ -146,12 +173,18 @@ async function syncRegion(region) {
         checked += 1;
         const entries = [];
         for (const [index, group] of (leaderboard?.leading_groups || []).entries()) {
+          const dungeonName = board.name || dungeonNames.get(dungeonId) || `Dungeon ${dungeonId}`;
+          const timeLimitMs = timerByDungeon.get(String(dungeonId)) || timerByDungeon.get(normalizeDungeonName(dungeonName));
+          if (!isTimedLeaderboardGroup(group, timeLimitMs)) {
+            untimedSkipped += 1;
+            continue;
+          }
           const roster = rosterFor(group);
           if (roster.length !== 5) continue;
           entries.push({
-            values: [periodId, region, realmId, seasonId, dungeonId, board.name || dungeonNames.get(dungeonId) || `Dungeon ${dungeonId}`, index + 1,
+            values: [periodId, region, realmId, seasonId, dungeonId, dungeonName, index + 1,
               Number(group.keystone_level || 0), Number(group.rating || 0), group.completed_timestamp ? new Date(group.completed_timestamp) : null,
-              JSON.stringify(roster), JSON.stringify(group)],
+              JSON.stringify(roster), JSON.stringify({ ...group, time_limit_ms: timeLimitMs })],
             score: Number(group.rating || 0), level: Number(group.keystone_level || 0), ranking: index + 1
           });
         }
@@ -184,7 +217,7 @@ async function syncRegion(region) {
     inserted += candidates.length;
     console.log(`${region.toUpperCase()} period ${periodId}: saved ${candidates.length} top runs by Blizzard score (limit ${sampleLimit}).`);
   }
-  console.log(`${region.toUpperCase()}: visited ${checked} realm/dungeon boards; skipped ${failedBoards}; saved ${inserted} leaderboard entries in ${Math.round((Date.now() - regionStartedAt) / 1000)}s.`);
+  console.log(`${region.toUpperCase()}: visited ${checked} realm/dungeon boards; skipped ${untimedSkipped} untimed/unknown runs and ${failedBoards} failed boards; saved ${inserted} timed leaderboard entries in ${Math.round((Date.now() - regionStartedAt) / 1000)}s.`);
 }
 
 try {

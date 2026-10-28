@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { pool } from './db.js';
 import { getTopRuns, normalizeRun } from './rio.js';
+import { isTimedRun } from './timed-runs.js';
 
 const regions = (process.env.RIO_REGIONS || 'us,eu,cn,tw,kr').split(',').map((x) => x.trim()).filter(Boolean);
 const pages = Math.max(1, Math.min(101, Number(process.env.RIO_PAGES_PER_REGION || 20)));
@@ -19,6 +20,21 @@ try {
   for (const region of regions) {
     let regionPages = 0;
     let regionImported = 0;
+    const [existingRows] = await pool.execute(
+      'SELECT source_run_id, payload FROM mythic_plus_runs WHERE region = ? AND season = ?', [region, season]
+    );
+    const staleIds = existingRows.filter((row) => {
+      let payload = row.payload;
+      if (typeof payload === 'string') {
+        try { payload = JSON.parse(payload); } catch { payload = null; }
+      }
+      return !isTimedRun(payload);
+    }).map((row) => row.source_run_id);
+    for (let offset = 0; offset < staleIds.length; offset += 250) {
+      const batch = staleIds.slice(offset, offset + 250);
+      await pool.query('DELETE FROM mythic_plus_runs WHERE region = ? AND season = ? AND source_run_id IN (?)', [region, season, batch]);
+    }
+    if (staleIds.length) console.log(`[sync] ${region}: removed ${staleIds.length} old untimed/unknown run(s).`);
     for (let page = 0; page < pages; page += 1) {
       const runs = await getTopRuns({ region, season, page });
       if (!runs.length) {
@@ -29,7 +45,7 @@ try {
       let pageImported = 0;
       for (const run of runs) {
         const item = normalizeRun(run, region, season);
-        if (!item) continue;
+        if (!item || !isTimedRun(item.payload)) continue;
         const [saved] = await pool.execute(
           `INSERT INTO mythic_plus_runs
             (source_run_id, region, season, dungeon, level, completed_at, score, roster, payload)

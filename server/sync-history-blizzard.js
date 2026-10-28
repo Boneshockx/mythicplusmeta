@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { blizzardData } from './blizzard.js';
+import { dungeonTimeLimitMs, isTimedLeaderboardGroup } from './timed-runs.js';
 
 const HISTORY_AGGREGATE_REALM_ID = 0xfffffffe;
 const MAX_RUNS_PER_PERIOD = 2000;
@@ -41,7 +42,7 @@ function mapSeasonDungeons(rioSeason, blizzardDungeons, region) {
     const id = idFrom(dungeon);
     if (!id) continue;
     for (const name of [dungeon.name, dungeon.slug, dungeon.short_name]) {
-      if (name) byName.set(norm(name), { id, name: dungeon.name || name });
+      if (name) byName.set(norm(name), { id, name: dungeon.name || name, timeLimitMs: dungeonTimeLimitMs(dungeon) });
     }
   }
   const unique = new Map();
@@ -53,7 +54,13 @@ function mapSeasonDungeons(rioSeason, blizzardDungeons, region) {
       console.warn(`[history] ${region.toUpperCase()} ${rioSeason.name}: no Blizzard dungeon ID found for ${name || 'unnamed dungeon'}; it cannot be queried.`);
       continue;
     }
-    unique.set(id, { id, name: dungeon.name || byName.get(norm(name))?.name || name || `Dungeon ${id}` });
+    const timeLimitMs = dungeonTimeLimitMs(dungeon) || byName.get(norm(name))?.timeLimitMs || null;
+    if (!timeLimitMs) console.warn(`[history] ${region.toUpperCase()} ${rioSeason.name}: no timer metadata for ${name}; Blizzard results without an explicit timed flag will be excluded.`);
+    unique.set(id, {
+      id,
+      name: dungeon.name || byName.get(norm(name))?.name || name || `Dungeon ${id}`,
+      timeLimitMs
+    });
   }
   return [...unique.values()];
 }
@@ -85,13 +92,14 @@ function candidateKey({ region, periodId, dungeonId, level, completedAt, roster,
 }
 
 function candidateFromGroup(group, { region, periodId, dungeon, realmId }) {
+  if (!isTimedLeaderboardGroup(group, dungeon.timeLimitMs)) return null;
   const roster = rosterFor(group);
   if (roster.length !== 5) return null;
   const level = Number(group.keystone_level || group.level || 0);
   const score = Number(group.rating || group.score || 0);
   const completedMs = timestamp(group.completed_timestamp || group.completed_at || group.completedAt);
   const completedAt = completedMs ? new Date(completedMs) : null;
-  const payload = { ...group, history_source: 'blizzard-realm-leaderboard', source_realms: [realmId] };
+  const payload = { ...group, time_limit_ms: dungeon.timeLimitMs, history_source: 'blizzard-realm-leaderboard', source_realms: [realmId] };
   const dungeonId = dungeon.id;
   return {
     key: candidateKey({ region, periodId, dungeonId, level, completedAt: completedMs, roster, payload }),
@@ -105,6 +113,8 @@ function candidateFromRow(row, region, periodId, dungeonByName) {
   const payload = jsonValue(row.payload, {});
   const name = row.dungeon || 'Unknown dungeon';
   const mappedDungeon = dungeonByName.get(norm(name));
+  const timeLimitMs = mappedDungeon?.timeLimitMs || dungeonTimeLimitMs(payload);
+  if (!isTimedLeaderboardGroup(payload, timeLimitMs)) return null;
   const dungeonId = mappedDungeon?.id || Number(row.dungeon_id) || 0;
   const completedMs = timestamp(row.completed_at);
   return {
@@ -141,7 +151,7 @@ async function readExistingCandidates(pool, region, seasonId, periodId, dungeonB
      ORDER BY score DESC, level DESC, completed_at DESC`,
     [region, periodId]
   );
-  const result = rows.map((row) => candidateFromRow(row, region, periodId, dungeonByName));
+  const result = rows.map((row) => candidateFromRow(row, region, periodId, dungeonByName)).filter(Boolean);
   for (const candidate of result) candidate.seasonId = seasonId;
   return result;
 }
@@ -153,7 +163,7 @@ async function readSavedCandidates(pool, region, seasonId, periodId, dungeonByNa
      ORDER BY score DESC, level DESC, completed_at DESC`,
     [region, seasonId, periodId]
   );
-  return rows.map((row) => candidateFromRow(row, region, periodId, dungeonByName));
+  return rows.map((row) => candidateFromRow(row, region, periodId, dungeonByName)).filter(Boolean);
 }
 
 async function saveBatch(pool, region, seasonId, periodId, candidates, outcomes) {
@@ -367,7 +377,7 @@ export async function capHistoryPeriod(pool, region, seasonId, periodId) {
     [region, periodId]
   );
   const candidates = new Map();
-  addAndTrim(candidates, rows.map((row) => candidateFromRow(row, region, periodId, new Map())));
+  addAndTrim(candidates, rows.map((row) => candidateFromRow(row, region, periodId, new Map())).filter(Boolean));
   return finalizePeriod(pool, region, seasonId, periodId, [...candidates.values()]);
 }
 
