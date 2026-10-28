@@ -3,6 +3,8 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pool } from './db.js';
+import { loadSeasonDungeonTimers } from './dungeon-timer-store.js';
+import { dungeonTimeLimitMs } from './timed-runs.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -12,7 +14,7 @@ app.use(express.json());
 
 // Midnight Season 2 in-game M+ limits. Store by canonicalized dungeon name because
 // Blizzard can expose different dungeon IDs for the same map across regions.
-const dungeonTimersMs = new Map([
+const fallbackDungeonTimersMs = new Map([
   ['altar of fangs', 30 * 60_000], ['den of nalorakk', 32 * 60_000],
   ["kings rest", 33 * 60_000], ['murder row', 34 * 60_000],
   ['ruby life pools', 28 * 60_000], ['temple of sethraliss', 32 * 60_000],
@@ -20,6 +22,29 @@ const dungeonTimersMs = new Map([
   ['voidscar arena', 30 * 60_000]
 ]);
 const normalizeDungeonName = (value) => String(value || 'Unknown dungeon').toLocaleLowerCase('en').replace(/[’']/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const dungeonTimerCache = new Map();
+const dungeonTimerCacheTtlMs = 60 * 60 * 1000;
+async function dungeonTimersFor(selector) {
+  const cacheKey = selector.seasonId != null ? `id:${selector.seasonId}` : `slug:${selector.seasonSlug}`;
+  const cached = dungeonTimerCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.map;
+  const timers = new Map(fallbackDungeonTimersMs);
+  try {
+    const rows = await loadSeasonDungeonTimers(pool, selector);
+    for (const row of rows) {
+      const timerMs = Number(row.time_limit_ms);
+      if (!timerMs) continue;
+      for (const name of [row.dungeon_name, row.dungeon_slug]) {
+        const key = normalizeDungeonName(name);
+        if (key) timers.set(key, timerMs);
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
+  }
+  dungeonTimerCache.set(cacheKey, { map: timers, expiresAt: Date.now() + dungeonTimerCacheTtlMs });
+  return timers;
+}
 const seasonFirstMplusPeriod = new Map([[18, 1077]]);
 const supportedExpansions = ['Legion', 'Battle for Azeroth', 'Shadowlands', 'Dragonflight', 'The War Within', 'Midnight'];
 const periodsResponseCache = new Map();
@@ -74,6 +99,7 @@ app.get('/api/meta/summary', async (req, res) => {
       const [latest] = await pool.query('SELECT season FROM mythic_plus_runs ORDER BY last_seen_at DESC LIMIT 1');
       if (latest[0]?.season) season = latest[0].season;
     }
+    const seasonDungeonTimersMs = await dungeonTimersFor({ seasonSlug: season });
     const params = [season];
     let where = 'season = ?';
     if (days) where += ` AND completed_at >= UTC_TIMESTAMP() - INTERVAL ${days} DAY`;
@@ -135,7 +161,7 @@ app.get('/api/meta/summary', async (req, res) => {
       dungeonRow.levelTotal += level;
       dungeonRow.maxLevel = Math.max(dungeonRow.maxLevel, level);
       const clearTime = Number(payload?.duration || payload?.clear_time_ms || payload?.clearTimeMs || 0);
-      const timeLimitMs = dungeonTimersMs.get(dungeonKey) || null;
+      const timeLimitMs = dungeonTimeLimitMs(payload) || seasonDungeonTimersMs.get(dungeonKey) || null;
       if (clearTime > 0) {
         dungeonRow.clearTimeTotal += clearTime; dungeonRow.timedRuns += 1;
         if (timeLimitMs) {
@@ -261,6 +287,7 @@ app.post('/api/internal/refresh-page-cache', async (req, res) => {
   historyResponseCache.clear();
   periodDetailsCache.clear();
   seasonWeekNumbersCache.clear();
+  dungeonTimerCache.clear();
   const baseUrl = `http://127.0.0.1:${port}`;
   const refresh = async (label, resource) => {
     console.log(`[page-cache] Starting ${label} refresh.`);
@@ -435,6 +462,7 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     const periodWhere = region === 'all' ? 'period_id = ?' : 'period_id = ? AND region = ?';
     const [periodRows] = await pool.execute(`SELECT * FROM weekly_periods WHERE ${periodWhere} ORDER BY region`, periodParams);
     if (!periodRows.length) return res.status(404).json({ error: 'This weekly period has not been imported yet.' });
+    const seasonDungeonTimersMs = await dungeonTimersFor({ seasonId: Number(periodRows[0].season_id) });
     const weekNumbers = await getSeasonWeekNumbers(Number(periodRows[0].season_id));
     const weekNumber = weekNumbers.get(periodId) || null;
     const runParams = region === 'all' ? [periodId] : [periodId, region];
@@ -443,7 +471,10 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       `SELECT region, dungeon, ranking, level, score, roster,
         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.duration')), 'null') AS duration,
         NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.clear_time_ms')), 'null') AS clear_time_ms,
-        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.clearTimeMs')), 'null') AS clearTimeMs
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.clearTimeMs')), 'null') AS clearTimeMs,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.time_limit_ms')), 'null') AS time_limit_ms,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.keystone_time_ms')), 'null') AS keystone_time_ms,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.par_time_ms')), 'null') AS par_time_ms
        FROM weekly_leaderboard_runs WHERE ${runWhere} ORDER BY score DESC, level DESC`, runParams
     );
     const comps = new Map(); const specs = new Map(); const levels = new Map(); const dungeons = new Map();
@@ -462,7 +493,8 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
       const dungeon = dungeons.get(dungeonKey) || { dungeon: run.dungeon, runs: 0, levelTotal: 0, maxLevel: 0, timedRuns: 0, clearTimeTotal: 0, remainingTimeTotalMs: 0, maxTimeRemainingMs: null, fastestRunLevel: null };
       dungeon.runs += 1; dungeon.levelTotal += Number(run.level); dungeon.maxLevel = Math.max(dungeon.maxLevel, Number(run.level));
       const clearTimeMs = Number(run.duration) || Number(run.clear_time_ms) || Number(run.clearTimeMs) || 0;
-      const timeLimitMs = dungeonTimersMs.get(dungeonKey) || null;
+      const timeLimitMs = Number(run.time_limit_ms || run.keystone_time_ms || run.par_time_ms)
+        || seasonDungeonTimersMs.get(dungeonKey) || null;
       if (clearTimeMs > 0) {
         dungeon.timedRuns += 1; dungeon.clearTimeTotal += clearTimeMs;
         if (timeLimitMs) {
@@ -494,7 +526,8 @@ app.get('/api/meta/period/:periodId', async (req, res) => {
     })));
     const fastestHighestRun = runs.filter((run) => Number(run.level) === maxKey).map((run) => {
       const durationMs = Number(run.duration) || Number(run.clear_time_ms) || Number(run.clearTimeMs) || 0;
-      const timeLimitMs = dungeonTimersMs.get(normalizeDungeonName(run.dungeon)) || 0;
+      const timeLimitMs = Number(run.time_limit_ms || run.keystone_time_ms || run.par_time_ms)
+        || seasonDungeonTimersMs.get(normalizeDungeonName(run.dungeon)) || 0;
       const timeRemainingMs = timeLimitMs - durationMs;
       return { run, durationMs, timeLimitMs, timeRemainingMs,
         timeRemainingPct: timeLimitMs > 0 ? timeRemainingMs / timeLimitMs * 100 : null };

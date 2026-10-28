@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS weekly_periods (
   KEY idx_weekly_season (season_id, region, start_timestamp)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS mythic_plus_dungeon_timers (
+  season_id INT UNSIGNED NOT NULL,
+  expansion_id SMALLINT UNSIGNED NOT NULL,
+  season_slug VARCHAR(100) NOT NULL,
+  dungeon_id INT UNSIGNED NULL,
+  dungeon_slug VARCHAR(160) NOT NULL,
+  dungeon_name VARCHAR(160) NOT NULL,
+  time_limit_ms INT UNSIGNED NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (season_id, dungeon_slug),
+  KEY idx_dungeon_timer_slug (season_slug, dungeon_slug),
+  KEY idx_dungeon_timer_name (season_id, dungeon_name)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS weekly_leaderboard_runs (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   period_id INT UNSIGNED NOT NULL,

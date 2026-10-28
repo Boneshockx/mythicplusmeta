@@ -7,6 +7,7 @@ import { refreshPageCaches } from './refresh-page-caches.js';
 import { capHistoryPeriod, ensureBlizzardHistoryTables, importBlizzardHistoryRegion } from './sync-history-blizzard.js';
 import { legacyPeriodForRun, legacySeasonId } from './legacy-periods.js';
 import { isTimedRun } from './timed-runs.js';
+import { ensureDungeonTimerTable, saveSeasonDungeonTimers } from './dungeon-timer-store.js';
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
@@ -105,6 +106,13 @@ async function loadRaiderIoSeasons(expansionFilter = null) {
       for (const [index, season] of expansionSeasons.entries()) {
         const blizzardSeasonId = Number(season.blizzard_season_id) || 0;
         const seasonId = blizzardSeasonId || legacySeasonId(expansionId, index + 1);
+        const timerCount = await saveSeasonDungeonTimers(pool, {
+          seasonId,
+          expansionId,
+          seasonSlug: season.slug,
+          dungeons: season.dungeons
+        });
+        console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} Season ${index + 1}: stored ${timerCount}/${(season.dungeons || []).length} dungeon timer(s).`);
         seasons.set(seasonId, {
           ...season,
           id: seasonId,
@@ -463,6 +471,7 @@ try {
     await ensureHistoryCheckpointTable();
     await ensureBlizzardHistoryTables(pool);
   }
+  await ensureDungeonTimerTable(pool);
   console.log(`[history] Blizzard supplies season and period windows where available. Legion has no Blizzard season IDs, so its Raider.IO run timestamps are grouped into region-reset weeks; US, EU, TW and KR also scan connected-realm leaderboards.`);
   console.log(`[history] The final dataset is capped at 2,000 deduplicated runs per region/period. Blizzard scans use BLIZZARD_HISTORY_CONCURRENCY and BLIZZARD_HISTORY_REQUEST_DELAY_MS.`);
   console.log(`[history] Raider.IO will scan page 0 through ${MAX_RIO_PAGE} per dungeon/region/season (${MAX_RIO_PAGE + 1} pages maximum${process.env.RIO_API_KEY ? ', access key detected' : ', no access key detected'}); global header-aware pacing, ${requestDelay}ms extra delay, ${rioConcurrency} concurrent dungeon scans.`);
