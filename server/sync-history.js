@@ -4,6 +4,7 @@ import { pool } from './db.js';
 import { blizzardData } from './blizzard.js';
 import { getMythicPlusStaticData, getRegionPeriods, getTopRuns, normalizeRun } from './rio.js';
 import { refreshPageCaches } from './refresh-page-caches.js';
+import { capHistoryPeriod, ensureBlizzardHistoryTables, importBlizzardHistoryRegion } from './sync-history-blizzard.js';
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
@@ -98,8 +99,16 @@ async function loadRaiderIoSeasons() {
 
 async function loadBlizzardRegion(region, rioSeasons) {
   console.log(`[history] ${region.toUpperCase()}: loading all Blizzard Mythic+ seasons.`);
-  const seasonIndex = await blizzardData(region, '/data/wow/mythic-keystone/season/index');
+  const [seasonIndex, realmIndex, dungeonIndex] = await Promise.all([
+    blizzardData(region, '/data/wow/mythic-keystone/season/index'),
+    blizzardData(region, '/data/wow/connected-realm/index'),
+    blizzardData(region, '/data/wow/mythic-keystone/dungeon/index')
+  ]);
   const indexedSeasons = [...(seasonIndex?.seasons || [])].sort((a, b) => idFrom(a) - idFrom(b));
+  const realmIds = [...new Set((realmIndex?.connected_realms || []).map(idFrom).filter(Boolean))];
+  const dungeons = dungeonIndex?.dungeons || [];
+  if (!realmIds.length) throw new Error(`Blizzard returned no connected realms for ${region}.`);
+  console.log(`[history] ${region.toUpperCase()}: ${realmIds.length} connected realms and ${dungeons.length} dungeon index entries.`);
   const periods = new Map();
   const seasons = [];
   const [cachedPeriodRows] = await pool.execute(
@@ -176,7 +185,7 @@ async function loadBlizzardRegion(region, rioSeasons) {
   }
 
   console.log(`[history] ${region.toUpperCase()}: loaded ${seasons.length} season(s) and ${periods.size} usable period windows.`);
-  return { seasons, periods };
+  return { seasons, periods, realms: realmIds, dungeons };
 }
 
 async function loadChinaPeriods(referenceSeasons, referencePeriods) {
@@ -381,9 +390,13 @@ try {
   const startedAt = Date.now();
   console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}.`);
   if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
-  else await ensureHistoryCheckpointTable();
-  console.log(`[history] Period labels/windows will come from Blizzard season and period data; run samples will come from Raider.IO.`);
-  console.log(`[history] Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; global header-aware request pacing (300ms minimum by default), ${requestDelay}ms extra per-worker pause, and ${rioConcurrency} concurrent dungeon scans.`);
+  else {
+    await ensureHistoryCheckpointTable();
+    await ensureBlizzardHistoryTables(pool);
+  }
+  console.log(`[history] Period labels/windows will come from Blizzard. US, EU, TW and KR runs will be collected from every connected-realm leaderboard; CN will use Raider.IO's historical run feed.`);
+  console.log(`[history] Blizzard history caps saved data at 2,000 deduplicated runs per region and period. Use BLIZZARD_HISTORY_CONCURRENCY and BLIZZARD_HISTORY_REQUEST_DELAY_MS to adjust request pacing.`);
+  console.log(`[history] CN Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; global header-aware request pacing, ${requestDelay}ms extra per-worker pause, and ${rioConcurrency} concurrent dungeon scans.`);
 
   const rioSeasons = await loadRaiderIoSeasons();
   const regionData = new Map();
@@ -395,10 +408,24 @@ try {
   let totalRuns = 0;
   let skippedSeasons = 0;
   let failedScans = 0;
-  let skippedDungeonScans = 0;
+  let skippedCompletedPeriods = 0;
   if (!labelsOnly) {
     for (const region of REGIONS) {
       const data = regionData.get(region);
+      if (region !== 'cn') {
+        const result = await importBlizzardHistoryRegion({
+          pool,
+          region,
+          seasons: data.seasons,
+          realms: data.realms,
+          dungeonIndex: data.dungeons,
+          rioSeasons
+        });
+        totalRuns += result.savedRuns;
+        failedScans += result.failedBoards;
+        skippedCompletedPeriods += result.skippedPeriods;
+        continue;
+      }
       for (const [seasonIndex, season] of data.seasons.entries()) {
         const rioSeason = rioSeasons.get(season.id);
         if (!rioSeason) {
@@ -410,7 +437,11 @@ try {
         const result = await importSeasonRegion(region, season, rioSeason, data.periods);
         totalRuns += result.runs;
         failedScans += result.failedScans;
-        skippedDungeonScans += result.skippedScans;
+        skippedCompletedPeriods += result.skippedScans;
+        for (const periodId of season.periodIds) {
+          const capped = await capHistoryPeriod(pool, region, season.id, periodId);
+          console.log(`[history] CN ${season.name} period ${periodId}: retained ${capped} top run(s) after the region/period cap.`);
+        }
       }
     }
   }
@@ -418,10 +449,10 @@ try {
   if (labelsOnly) {
     console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Refreshed season names and period windows without importing runs.`);
   } else if (failedScans) {
-    console.warn(`[history] Finished in ${Math.round((Date.now() - startedAt) / 1000)}s with ${failedScans} incomplete dungeon scan(s). Saved ${totalRuns} run rows, skipped ${skippedDungeonScans} completed dungeon scan(s), and skipped ${skippedSeasons} region/season run imports without Raider.IO metadata. Rerun the command to retry incomplete data.`);
+    console.warn(`[history] Finished in ${Math.round((Date.now() - startedAt) / 1000)}s with ${failedScans} incomplete board/season issue(s). Saved or retained ${totalRuns} run rows, skipped ${skippedCompletedPeriods} completed period/scan(s), and skipped ${skippedSeasons} region/season run imports without Raider.IO metadata. Rerun the command to retry incomplete data.`);
     process.exitCode = 1;
   } else {
-    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved ${totalRuns} new run rows, skipped ${skippedDungeonScans} already completed dungeon scan(s), and skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
+    console.log(`[history] Completed in ${Math.round((Date.now() - startedAt) / 1000)}s. Saved or retained ${totalRuns} run rows, skipped ${skippedCompletedPeriods} completed period/scan(s), and skipped ${skippedSeasons} region/season run imports without a Raider.IO season match.`);
   }
 } catch (error) {
   console.error(`[history] Import failed: ${error.stack || error.message}`);
