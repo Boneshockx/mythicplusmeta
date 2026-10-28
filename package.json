@@ -9,6 +9,7 @@
     "start": "node server/index.js",
     "db:setup": "node server/apply-schema.js",
     "sync": "node server/sync.js && node server/sync-weekly.js",
+    "sync:weekly": "node server/sync-weekly.js",
     "sync:history": "node server/sync-history.js"
   },
   "dependencies": {

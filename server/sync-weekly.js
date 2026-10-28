@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { pool } from './db.js';
 import { blizzardData } from './blizzard.js';
 import { syncChinaWeekly } from './sync-weekly-cn.js';
@@ -197,6 +199,20 @@ try {
       seasonId: requestedSeason,
       periodId: requestedPeriod ? Number(requestedPeriod) : null,
       sampleLimit
+    });
+  }
+  if (args.get('legacy') === 'true') {
+    console.log('[weekly-sync] Starting the checkpointed Legion backfill. Legion has no Blizzard season IDs; Raider.IO supplies the season runs and the history importer groups them into regional reset weeks.');
+    await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./sync-history.js', import.meta.url)), '--expansion=Legion'], {
+        stdio: 'inherit',
+        env: process.env
+      });
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Legion backfill exited ${signal ? `after ${signal}` : `with code ${code}`}.`));
+      });
     });
   }
   console.log(`[weekly-sync] Finished successfully in ${Math.round((Date.now() - startedAt) / 1000)}s.`);

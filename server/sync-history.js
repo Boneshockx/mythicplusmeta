@@ -5,6 +5,7 @@ import { blizzardData } from './blizzard.js';
 import { getMythicPlusStaticData, getRegionPeriods, getTopRuns, normalizeRun } from './rio.js';
 import { refreshPageCaches } from './refresh-page-caches.js';
 import { capHistoryPeriod, ensureBlizzardHistoryTables, importBlizzardHistoryRegion } from './sync-history-blizzard.js';
+import { legacyPeriodForRun, legacySeasonId } from './legacy-periods.js';
 
 // Raider.IO currently publishes Mythic+ static data for Legion through Midnight.
 const EXPANSION_IDS = [6, 7, 8, 9, 10, 11];
@@ -25,6 +26,8 @@ const MAX_RIO_PAGE = Number.isFinite(configuredMaxRioPage) && configuredMaxRioPa
   : RIO_PAGE_CAP;
 const labelsOnly = process.argv.includes('--labels-only');
 const force = process.argv.includes('--force');
+const expansionArg = process.argv.find((argument) => argument.startsWith('--expansion='));
+const requestedExpansion = expansionArg ? expansionArg.slice('--expansion='.length).trim().toLowerCase() : null;
 // Keep Raider.IO-only rows separate from Blizzard's connected-realm rankings.
 const RAIDER_IO_REALM_ID = 0xffffffff;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -69,38 +72,55 @@ async function setRioCoverageCheckpoint(region, seasonId, dungeonId, dungeon, st
   );
 }
 
-async function loadRaiderIoSeasons() {
+async function loadRaiderIoSeasons(expansionFilter = null) {
   const seasons = new Map();
-  for (const expansionId of EXPANSION_IDS) {
+  const expansionIds = expansionFilter
+    ? EXPANSION_IDS.filter((id) => EXPANSION_NAMES[id].toLowerCase() === expansionFilter)
+    : EXPANSION_IDS;
+  if (!expansionIds.length) throw new Error(`Unknown expansion filter: ${expansionFilter}.`);
+  for (const expansionId of expansionIds) {
     console.log(`[history] Raider.IO: loading static season data for expansion ${expansionId}.`);
     try {
       const data = await getMythicPlusStaticData(expansionId);
       const allExpansionSeasons = (data?.seasons || [])
-        .filter((season) => Number(season.blizzard_season_id) > 0 && season.slug);
+        .filter((season) => season.slug && (Number(season.blizzard_season_id) > 0 || expansionId === 6));
       const expansionSeasons = allExpansionSeasons
         .filter((season) => season.is_main_season === true)
-        .sort((a, b) => Number(a.blizzard_season_id) - Number(b.blizzard_season_id));
+        .map((season, sourceIndex) => ({ season, sourceIndex }))
+        .sort((a, b) => {
+          const aId = Number(a.season.blizzard_season_id) || 0;
+          const bId = Number(b.season.blizzard_season_id) || 0;
+          if (aId && bId) return aId - bId;
+          // Raider.IO returns Legion seasons newest first, and Blizzard has no
+          // season IDs for them. Sort their patch slugs into release order.
+          if (expansionId === 6) return a.season.slug.localeCompare(b.season.slug, undefined, { numeric: true });
+          return a.sourceIndex - b.sourceIndex;
+        })
+        .map(({ season }) => season);
       const excludedCount = allExpansionSeasons.length - expansionSeasons.length;
       if (allExpansionSeasons.length && !expansionSeasons.length) {
         throw new Error(`Raider.IO returned seasons for expansion ${expansionId}, but none were marked as main seasons.`);
       }
       for (const [index, season] of expansionSeasons.entries()) {
-        const blizzardSeasonId = Number(season.blizzard_season_id);
-        seasons.set(blizzardSeasonId, {
+        const blizzardSeasonId = Number(season.blizzard_season_id) || 0;
+        const seasonId = blizzardSeasonId || legacySeasonId(expansionId, index + 1);
+        seasons.set(seasonId, {
           ...season,
+          id: seasonId,
+          legacy: blizzardSeasonId === 0,
           expansionId,
           expansionName: EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`,
           expansionSeasonNumber: index + 1,
           displayName: `${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} Season ${index + 1}`
         });
       }
-      console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `expansion ${expansionId}`} returned ${expansionSeasons.length} main season(s)${excludedCount ? `; ignored ${excludedCount} post-season or special leaderboard entry/entries` : ''}: ${expansionSeasons.map((season, index) => `${Number(season.blizzard_season_id)}=${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} S${index + 1}`).join(', ') || 'none'}.`);
+      console.log(`[history] Raider.IO: ${EXPANSION_NAMES[expansionId] || `expansion ${expansionId}`} returned ${expansionSeasons.length} main season(s)${excludedCount ? `; ignored ${excludedCount} post-season or special leaderboard entry/entries` : ''}: ${expansionSeasons.map((season, index) => `${Number(season.blizzard_season_id) || 'no Blizzard ID'}=${EXPANSION_NAMES[expansionId] || `Expansion ${expansionId}`} S${index + 1} (${season.slug})`).join(', ') || 'none'}.`);
     } catch (error) {
       console.warn(`[history] Raider.IO: could not load expansion ${expansionId}: ${error.message}`);
     }
   }
   if (!seasons.size) throw new Error('Raider.IO returned no season metadata.');
-  console.log(`[history] Raider.IO: found ${seasons.size} season(s) with Blizzard season IDs.`);
+  console.log(`[history] Raider.IO: found ${seasons.size} season(s), including Legion seasons without Blizzard season IDs.`);
   return seasons;
 }
 
@@ -191,6 +211,18 @@ async function loadBlizzardRegion(region, rioSeasons) {
     }
   }
 
+  const legacySeasons = [...rioSeasons.values()].filter((season) => season.legacy);
+  for (const season of legacySeasons) {
+    seasons.push({ id: season.id, name: season.displayName, periodIds: [], legacy: true });
+    for (const row of cachedPeriodRows) {
+      if (Number(row.season_id) !== season.id || !Number(row.start_timestamp) || !Number(row.end_timestamp)) continue;
+      periods.set(Number(row.period_id), {
+        id: Number(row.period_id), seasonId: season.id, seasonName: season.displayName,
+        start: Number(row.start_timestamp), end: Number(row.end_timestamp)
+      });
+    }
+  }
+
   console.log(`[history] ${region.toUpperCase()}: loaded ${seasons.length} season(s) and ${periods.size} usable period windows.`);
   return { seasons, periods, realms: realmIds, dungeons };
 }
@@ -238,16 +270,28 @@ async function loadChinaPeriods(referenceSeasons, referencePeriods) {
   return periods;
 }
 
-function periodForRun(completedAt, periods) {
+function periodForRun(completedAt, periods, region, season, orderedPeriods) {
   const completed = timestamp(completedAt);
   if (!completed) return null;
-  for (const period of periods.values()) {
-    if (completed >= period.start && completed < period.end) return period;
+  if (season?.legacy) {
+    const period = legacyPeriodForRun(region, completed, season.id, season.name);
+    if (period) periods.set(period.id, period);
+    return period;
+  }
+  let low = 0;
+  let high = orderedPeriods.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const period = orderedPeriods[middle];
+    if (completed < period.start) high = middle - 1;
+    else if (completed >= period.end) low = middle + 1;
+    else return period;
   }
   return null;
 }
 
 async function importSeasonRegion(region, season, rioSeason, periodWindows, force) {
+  const orderedPeriodWindows = season.legacy ? [] : [...periodWindows.values()].sort((a, b) => a.start - b.start);
   const dungeons = [...new Map((rioSeason.dungeons || [])
     .filter((dungeon) => dungeon?.slug || dungeon?.name)
     .map((dungeon) => [dungeon.slug || dungeon.name, dungeon])).values()];
@@ -324,7 +368,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
       for (const entry of entries) {
         const run = normalizeRun(entry, region, rioSeason.slug);
         if (!run?.completedAt || run.roster.length !== 5) continue;
-        const period = periodForRun(run.completedAt, periodWindows);
+        const period = periodForRun(run.completedAt, periodWindows, region, season, orderedPeriodWindows);
         if (!period || period.seasonId !== season.id) {
           unmapped += 1;
           continue;
@@ -351,6 +395,16 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
       console.warn(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: reached Raider.IO page ${MAX_RIO_PAGE}; later pages are not available through this endpoint.`);
     }
     let dungeonSaved = 0;
+    for (const period of byPeriod.keys()) {
+      const window = periodWindows.get(period);
+      if (!window || !season.legacy) continue;
+      await pool.execute(
+        `INSERT INTO weekly_periods (period_id, region, season_id, season_name, start_timestamp, end_timestamp)
+         VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE season_id=VALUES(season_id), season_name=VALUES(season_name),
+           start_timestamp=VALUES(start_timestamp), end_timestamp=VALUES(end_timestamp)`,
+        [window.id, region, season.id, season.name, window.start, window.end]
+      );
+    }
     for (const [periodId, periodGroups] of byPeriod) {
       const runMap = periodGroups.get(dungeonName);
       if (!runMap?.size) continue;
@@ -390,23 +444,45 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows, forc
 
 try {
   const startedAt = Date.now();
-  console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}.`);
+  console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}${requestedExpansion ? `; expansion filter: ${requestedExpansion}` : ''}.`);
   if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
   if (force && !labelsOnly) console.log('[history] Force mode: ignoring completed Blizzard period/board and Raider.IO coverage checkpoints. Existing rows remain candidates and will be merged with the fresh scans.');
   if (!labelsOnly) {
     await ensureHistoryCheckpointTable();
     await ensureBlizzardHistoryTables(pool);
   }
-  console.log(`[history] Period labels/windows come from Blizzard. US, EU, TW and KR also scan every available connected-realm leaderboard; Raider.IO run pages are imported for all regions to fill additional gaps.`);
+  console.log(`[history] Blizzard supplies season and period windows where available. Legion has no Blizzard season IDs, so its Raider.IO run timestamps are grouped into region-reset weeks; US, EU, TW and KR also scan connected-realm leaderboards.`);
   console.log(`[history] The final dataset is capped at 2,000 deduplicated runs per region/period. Blizzard scans use BLIZZARD_HISTORY_CONCURRENCY and BLIZZARD_HISTORY_REQUEST_DELAY_MS.`);
   console.log(`[history] Raider.IO will scan page 0 through ${MAX_RIO_PAGE} per dungeon/region/season (${MAX_RIO_PAGE + 1} pages maximum${process.env.RIO_API_KEY ? ', access key detected' : ', no access key detected'}); global header-aware pacing, ${requestDelay}ms extra delay, ${rioConcurrency} concurrent dungeon scans.`);
 
-  const rioSeasons = await loadRaiderIoSeasons();
+  const rioSeasons = await loadRaiderIoSeasons(requestedExpansion);
   const regionData = new Map();
-  for (const region of BLIZZARD_REGIONS) regionData.set(region, await loadBlizzardRegion(region, rioSeasons));
-  const reference = regionData.get('us');
-  const cnPeriods = await loadChinaPeriods(reference.seasons, reference.periods);
-  regionData.set('cn', { seasons: reference.seasons, periods: cnPeriods });
+  if (requestedExpansion === 'legion') {
+    const seasons = [...rioSeasons.values()].filter((season) => season.expansionId === 6).map((season) => ({
+      id: season.id, name: season.displayName, periodIds: [], legacy: true
+    }));
+    if (!seasons.length) throw new Error('Raider.IO returned no Legion season metadata.');
+    console.log(`[history] Legion-only mode: importing ${seasons.length} Raider.IO seasons without querying Blizzard's season/period endpoints.`);
+    for (const region of REGIONS) {
+      const seasonIds = seasons.map((season) => season.id);
+      const placeholders = seasonIds.map(() => '?').join(',');
+      const [rows] = await pool.execute(
+        `SELECT period_id, season_id, season_name, start_timestamp, end_timestamp
+         FROM weekly_periods WHERE region = ? AND season_id IN (${placeholders})`,
+        [region, ...seasonIds]
+      );
+      const periods = new Map(rows.map((row) => [Number(row.period_id), {
+        id: Number(row.period_id), seasonId: Number(row.season_id), seasonName: row.season_name,
+        start: Number(row.start_timestamp), end: Number(row.end_timestamp)
+      }]));
+      regionData.set(region, { seasons, periods, realms: [], dungeons: [] });
+    }
+  } else {
+    for (const region of BLIZZARD_REGIONS) regionData.set(region, await loadBlizzardRegion(region, rioSeasons));
+    const reference = regionData.get('us');
+    const cnPeriods = await loadChinaPeriods(reference.seasons, reference.periods);
+    regionData.set('cn', { seasons: reference.seasons, periods: cnPeriods });
+  }
 
   let totalRuns = 0;
   let skippedSeasons = 0;
@@ -415,11 +491,14 @@ try {
   if (!labelsOnly) {
     for (const region of REGIONS) {
       const data = regionData.get(region);
-      if (region !== 'cn') {
+      const seasonsToImport = requestedExpansion
+        ? data.seasons.filter((season) => season.name.toLowerCase().startsWith(requestedExpansion))
+        : data.seasons;
+      if (region !== 'cn' && seasonsToImport.some((season) => !season.legacy)) {
         const result = await importBlizzardHistoryRegion({
           pool,
           region,
-          seasons: data.seasons,
+          seasons: seasonsToImport.filter((season) => !season.legacy),
           realms: data.realms,
           dungeonIndex: data.dungeons,
           rioSeasons,
@@ -429,7 +508,7 @@ try {
         failedScans += result.failedBoards;
         skippedCompletedPeriods += result.skippedPeriods;
       }
-      for (const [seasonIndex, season] of data.seasons.entries()) {
+      for (const [seasonIndex, season] of seasonsToImport.entries()) {
         const rioSeason = rioSeasons.get(season.id);
         if (!rioSeason) {
           skippedSeasons += 1;
@@ -441,7 +520,10 @@ try {
         totalRuns += result.runs;
         failedScans += result.failedScans;
         skippedCompletedPeriods += result.skippedScans;
-        for (const periodId of season.periodIds) {
+        const seasonPeriodIds = season.legacy
+          ? [...data.periods.values()].filter((period) => period.seasonId === season.id).map((period) => period.id)
+          : season.periodIds;
+        for (const periodId of seasonPeriodIds) {
           const capped = await capHistoryPeriod(pool, region, season.id, periodId);
           console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: retained ${capped} top run(s) after combining sources and applying the region/period cap.`);
         }
