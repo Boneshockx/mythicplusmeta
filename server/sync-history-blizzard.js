@@ -407,6 +407,13 @@ export async function importBlizzardHistoryRegion({ pool, region, seasons, realm
       failedBoards += season.periodIds.length || 1;
       continue;
     }
+    const dungeonsWithoutTimers = mappedDungeons.filter((dungeon) => !dungeon.timeLimitMs);
+    console.log(`[history] ${region.toUpperCase()} ${season.name}: timer preflight resolved ${mappedDungeons.length - dungeonsWithoutTimers.length}/${mappedDungeons.length} dungeon timers before scanning Blizzard boards.`);
+    if (dungeonsWithoutTimers.length) {
+      console.error(`[history] ${region.toUpperCase()} ${season.name}: skipping Blizzard scans because timer metadata is missing for ${dungeonsWithoutTimers.map((dungeon) => dungeon.name).join(', ')}. The season will remain retryable rather than being marked complete with zero or partial timed runs.`);
+      failedBoards += season.periodIds.length || 1;
+      continue;
+    }
     season.dungeons = mappedDungeons;
     const expectedBoards = realms.length * mappedDungeons.length * season.periodIds.length;
     console.log(`[history] ${region.toUpperCase()} ${season.name}: ${mappedDungeons.length} dungeon(s) x ${realms.length} realm(s) x ${season.periodIds.length} period(s) = ${expectedBoards.toLocaleString()} leaderboard checks.`);

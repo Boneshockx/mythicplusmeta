@@ -26,7 +26,7 @@ export function dungeonTimeLimitMs(dungeon) {
     const value = milliseconds(dungeon[key]);
     if (value) return value;
   }
-  for (const key of ['time_limit_seconds', 'keystone_time_limit_seconds', 'time_limit_sec', 'timeLimitSeconds']) {
+  for (const key of ['time_limit_seconds', 'keystone_time_limit_seconds', 'keystone_timer_seconds', 'time_limit_sec', 'timeLimitSeconds']) {
     const value = milliseconds(dungeon[key], 'seconds');
     if (value) return value;
   }
