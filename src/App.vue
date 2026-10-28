@@ -503,8 +503,8 @@ onMounted(() => {
       <h1>Weekly <span>periods</span></h1>
       <p class="weekly-lead">Each row is a World of Warcraft Mythic Keystone leaderboard period imported from Blizzard. Select a week to explore its top compositions, spec representation, diversity and dungeon highs.</p>
       <div class="filters"><label>Expansion<select v-model="periodExpansion" @change="loadPeriods"><option value="all">All expansions</option><option v-for="expansion in periodExpansions" :key="expansion" :value="expansion">{{ expansion }}</option></select></label></div>
-      <div v-if="weeklyError" class="notice error">{{ weeklyError }}</div><div v-else-if="weeklyLoading" class="notice">Loading weekly periods…</div>
-      <div v-else-if="!periodRows.length" class="notice"><b>No weekly periods have been imported yet.</b><span>Add Blizzard OAuth credentials to `.env`, then run `npm run sync:weekly` to capture the latest period.</span></div>
+      <div v-if="weeklyError" class="notice error"><b>Weekly periods are temporarily unavailable.</b><span>Please try again later.</span></div><div v-else-if="weeklyLoading" class="notice">Loading weekly periods…</div>
+      <div v-else-if="!periodRows.length" class="notice"><b>No weekly periods are available yet.</b><span>Please check back later.</span></div>
       <div v-else class="table-scroll weekly-table-wrap"><table class="weekly-table"><thead><tr><th>Period</th><th>Week</th><th>Season</th><th>Top keys</th><th>Regional reset windows (UTC)</th></tr></thead><tbody>
         <tr v-for="period in periodRows" :key="period.periodId" @click="navigatePage('week', period.periodId)"><td><button class="period-link">{{ period.periodId }}</button></td><td><span v-if="!period.offSeason">Week {{ period.weekNumber ?? '—' }}</span><span v-else>—</span><span v-if="period.offSeason" class="off-season-badge" aria-label="This API period happened before the Mythic Plus season opened.">Off-season</span><span v-else-if="period.runCount === 0" class="no-mplus-badge" aria-label="No Mythic Plus leaderboard data is available for this period.">No M+ data</span></td><td>{{ period.season }}</td><td>{{ period.runCount.toLocaleString() }}</td><td><span class="reset-window" v-for="window in period.regionWindows" :key="window.region"><b>{{ window.region.toUpperCase() }}</b> {{ formatResetTime(window.start) }} → {{ formatResetTime(window.end) }}</span></td></tr>
       </tbody></table></div>
@@ -513,7 +513,7 @@ onMounted(() => {
 
     <main v-else-if="currentPage === 'week'" class="weekly-main">
       <button class="back-to-dashboard" @click="navigatePage('periods')">← All periods</button>
-      <div v-if="weeklyLoading" class="notice">Loading this weekly sample…</div><div v-else-if="weeklyError" class="notice error"><b>Weekly data is not available</b><span>{{ weeklyError }}</span></div>
+      <div v-if="weeklyLoading" class="notice">Loading this weekly sample…</div><div v-else-if="weeklyError" class="notice error"><b>Weekly data is temporarily unavailable.</b><span>Please try again later.</span></div>
       <template v-else-if="weeklyData">
         <div class="weekly-title-row"><div><div class="kicker"><span class="status-dot"></span> {{ weeklyData.season }} · {{ weeklyData.offSeason ? 'OFF-SEASON' : `WEEK ${weeklyData.weekNumber}` }} · RESET PERIOD</div><h1>Period {{ weeklyData.periodId }}</h1><p>Each region uses its own weekly reset window:</p><div class="weekly-window-chips"><span v-for="window in weeklyData.regionWindows" :key="window.region"><b>{{ window.region.toUpperCase() }}</b> {{ formatResetTime(window.start) }} – {{ formatResetTime(window.end) }}</span></div></div><label class="level-filter">Region <select v-model="weeklyRegion" @change="loadWeek(weeklyData.periodId)"><option value="all">All imported regions</option><option v-for="item in regions.filter((x) => x.id !== 'all')" :key="item.id" :value="item.id">{{ item.label }}</option></select></label></div>
         <div class="summary-grid"><article class="summary-card featured"><span class="summary-label">TOP KEYS</span><div class="summary-value">{{ weeklyData.sampleSize.toLocaleString() }}</div><div class="summary-foot">Imported leaderboard entries</div></article><article class="summary-card"><span class="summary-label">CHARACTER SLOTS</span><div class="summary-value">{{ weeklyData.totalCharacters.toLocaleString() }}</div><div class="summary-foot">Across selected period</div></article><article class="summary-card"><span class="summary-label">AVERAGE KEY</span><div class="summary-value">{{ weeklyData.averageLevel.toFixed(1) }}</div><div class="summary-foot">Selected period</div></article><article class="summary-card"><span class="summary-label">HIGHEST KEY</span><div class="summary-value">+{{ weeklyData.highestKey }}</div><div class="summary-foot">Selected period</div></article></div>
@@ -564,7 +564,7 @@ onMounted(() => {
       <div class="kicker"><span class="status-dot"></span> SEASON TRENDS</div>
       <h1>Meta <span>history</span></h1>
       <p class="weekly-lead">Compare the weekly specialization meta, highest completed key and diversity across periods.</p>
-      <div v-if="weeklyError" class="notice error">{{ weeklyError }}</div>
+      <div v-if="weeklyError" class="notice error"><b>History is temporarily unavailable.</b><span>Please try again later.</span></div>
       <div v-else-if="weeklyLoading" class="notice">Loading history...</div>
       <div v-else-if="!historyRows.length" class="notice"><b>No history found for {{ historyExpansion }}.</b><span>Choose another expansion or import weekly periods for this expansion.</span></div>
       <template v-else>
@@ -639,7 +639,7 @@ onMounted(() => {
         </div>
       </section>
 
-      <div v-if="error" class="notice error"><b>Couldn’t load the meta data</b><span>{{ error }}</span><small>Check the MySQL connection and the stored weekly data. Manual imports are run from the command line with <code>npm run sync:weekly</code>.</small></div>
+      <div v-if="error" class="notice error"><b>Meta data is temporarily unavailable.</b><span>Please try again later.</span></div>
       <div v-else-if="loading && !data" class="notice">Loading the regional meta sample…</div>
       <template v-else-if="data">
         <div class="summary-grid dashboard-summary" id="overview">
