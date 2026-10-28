@@ -24,6 +24,7 @@ const MAX_RIO_PAGE = Number.isFinite(configuredMaxRioPage) && configuredMaxRioPa
   ? Math.min(RIO_PAGE_CAP, Math.floor(configuredMaxRioPage))
   : RIO_PAGE_CAP;
 const labelsOnly = process.argv.includes('--labels-only');
+const force = process.argv.includes('--force');
 // Keep Raider.IO-only rows separate from Blizzard's connected-realm rankings.
 const RAIDER_IO_REALM_ID = 0xffffffff;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -246,7 +247,7 @@ function periodForRun(completedAt, periods) {
   return null;
 }
 
-async function importSeasonRegion(region, season, rioSeason, periodWindows) {
+async function importSeasonRegion(region, season, rioSeason, periodWindows, force) {
   const dungeons = [...new Map((rioSeason.dungeons || [])
     .filter((dungeon) => dungeon?.slug || dungeon?.name)
     .map((dungeon) => [dungeon.slug || dungeon.name, dungeon])).values()];
@@ -278,7 +279,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       && Number(coverage.last_page) < Number(coverage.max_page);
     const scannedConfiguredLimit = coverage?.status === 'complete'
       && Number(coverage.max_page) >= MAX_RIO_PAGE;
-    if (exhaustedAvailablePages || scannedConfiguredLimit) {
+    if (!force && (exhaustedAvailablePages || scannedConfiguredLimit)) {
       skippedScans += 1;
       console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; Raider.IO coverage is complete through page ${coverage.last_page} (limit ${coverage.max_page}).`);
       return;
@@ -391,7 +392,8 @@ try {
   const startedAt = Date.now();
   console.log(`[history] Starting one-time historical import for ${REGIONS.join(', ')}.`);
   if (labelsOnly) console.log('[history] Labels-only mode: refreshing period season names and windows; run leaderboards will not be fetched.');
-  else {
+  if (force && !labelsOnly) console.log('[history] Force mode: ignoring completed Blizzard period/board and Raider.IO coverage checkpoints. Existing rows remain candidates and will be merged with the fresh scans.');
+  if (!labelsOnly) {
     await ensureHistoryCheckpointTable();
     await ensureBlizzardHistoryTables(pool);
   }
@@ -420,7 +422,8 @@ try {
           seasons: data.seasons,
           realms: data.realms,
           dungeonIndex: data.dungeons,
-          rioSeasons
+          rioSeasons,
+          force
         });
         totalRuns += result.savedRuns;
         failedScans += result.failedBoards;
@@ -434,7 +437,7 @@ try {
           continue;
         }
         console.log(`[history] ${region.toUpperCase()}: Raider.IO season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, slug ${rioSeason.slug}.`);
-        const result = await importSeasonRegion(region, season, rioSeason, data.periods);
+        const result = await importSeasonRegion(region, season, rioSeason, data.periods, force);
         totalRuns += result.runs;
         failedScans += result.failedScans;
         skippedCompletedPeriods += result.skippedScans;

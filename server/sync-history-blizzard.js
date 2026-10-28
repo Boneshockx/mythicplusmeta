@@ -229,12 +229,12 @@ async function finalizePeriod(pool, region, seasonId, periodId, candidates) {
   return values.length;
 }
 
-async function importPeriod({ pool, region, season, periodId, realms, dungeons, concurrency, delayMs }) {
+async function importPeriod({ pool, region, season, periodId, realms, dungeons, concurrency, delayMs, force }) {
   const [periodCheckpoints] = await pool.execute(
     'SELECT status, saved_runs FROM history_sync_period_checkpoints WHERE region = ? AND season_id = ? AND period_id = ?',
     [region, season.id, periodId]
   );
-  if (periodCheckpoints[0]?.status === 'complete') {
+  if (!force && periodCheckpoints[0]?.status === 'complete') {
     console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: already complete (${periodCheckpoints[0].saved_runs} saved runs); skipping.`);
     return { saved: Number(periodCheckpoints[0].saved_runs) || 0, failed: 0, skipped: 1 };
   }
@@ -246,7 +246,7 @@ async function importPeriod({ pool, region, season, periodId, realms, dungeons, 
     [region, season.id, periodId]
   );
   const completed = new Set(doneRows.map((row) => `${Number(row.connected_realm_id)}:${Number(row.dungeon_id)}`));
-  const pending = boards.filter((board) => !completed.has(`${board.realmId}:${board.dungeonId}`));
+  const pending = force ? boards : boards.filter((board) => !completed.has(`${board.realmId}:${board.dungeonId}`));
   const dungeonByName = new Map(dungeons.flatMap((dungeon) => [[norm(dungeon.name), dungeon], [norm(dungeon.id), dungeon]]));
   const savedCandidates = await readSavedCandidates(pool, region, season.id, periodId, dungeonByName);
   const candidateMap = new Map();
@@ -371,7 +371,7 @@ export async function capHistoryPeriod(pool, region, seasonId, periodId) {
   return finalizePeriod(pool, region, seasonId, periodId, [...candidates.values()]);
 }
 
-export async function importBlizzardHistoryRegion({ pool, region, seasons, realms, dungeonIndex, rioSeasons }) {
+export async function importBlizzardHistoryRegion({ pool, region, seasons, realms, dungeonIndex, rioSeasons, force = false }) {
   const concurrency = Math.max(1, Math.min(8, Number(process.env.BLIZZARD_HISTORY_CONCURRENCY || 3)));
   const delayMs = Math.max(0, Number(process.env.BLIZZARD_HISTORY_REQUEST_DELAY_MS || 350));
   let savedRuns = 0;
@@ -396,7 +396,7 @@ export async function importBlizzardHistoryRegion({ pool, region, seasons, realm
     const expectedBoards = realms.length * mappedDungeons.length * season.periodIds.length;
     console.log(`[history] ${region.toUpperCase()} ${season.name}: ${mappedDungeons.length} dungeon(s) x ${realms.length} realm(s) x ${season.periodIds.length} period(s) = ${expectedBoards.toLocaleString()} leaderboard checks.`);
     for (const periodId of season.periodIds) {
-      const result = await importPeriod({ pool, region, season, periodId, realms, dungeons: mappedDungeons, concurrency, delayMs });
+      const result = await importPeriod({ pool, region, season, periodId, realms, dungeons: mappedDungeons, concurrency, delayMs, force });
       savedRuns += result.saved;
       failedBoards += result.failed;
       skippedPeriods += result.skipped;
