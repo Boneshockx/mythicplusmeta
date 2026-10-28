@@ -138,7 +138,7 @@ async function readExistingCandidates(pool, region, seasonId, periodId, dungeonB
   const [rows] = await pool.execute(
     `SELECT season_id, dungeon_id, dungeon, level, score, completed_at, roster, payload
      FROM weekly_leaderboard_runs WHERE region = ? AND period_id = ?
-     ORDER BY score DESC, level DESC, completed_at DESC LIMIT 10000`,
+     ORDER BY score DESC, level DESC, completed_at DESC`,
     [region, periodId]
   );
   const result = rows.map((row) => candidateFromRow(row, region, periodId, dungeonByName));
@@ -363,7 +363,7 @@ export async function capHistoryPeriod(pool, region, seasonId, periodId) {
   const [rows] = await pool.execute(
     `SELECT season_id, dungeon_id, dungeon, level, score, completed_at, roster, payload
      FROM weekly_leaderboard_runs WHERE region = ? AND period_id = ?
-     ORDER BY score DESC, level DESC, completed_at DESC LIMIT 10000`,
+     ORDER BY score DESC, level DESC, completed_at DESC`,
     [region, periodId]
   );
   const candidates = new Map();

@@ -18,7 +18,11 @@ const EXPANSION_NAMES = {
 };
 const BLIZZARD_REGIONS = ['us', 'eu', 'tw', 'kr'];
 const REGIONS = [...BLIZZARD_REGIONS, 'cn'];
-const MAX_RIO_PAGE = 100;
+const RIO_PAGE_CAP = process.env.RIO_API_KEY ? 999 : 99;
+const configuredMaxRioPage = Number(process.env.RIO_HISTORY_MAX_PAGE);
+const MAX_RIO_PAGE = Number.isFinite(configuredMaxRioPage) && configuredMaxRioPage >= 0
+  ? Math.min(RIO_PAGE_CAP, Math.floor(configuredMaxRioPage))
+  : RIO_PAGE_CAP;
 const labelsOnly = process.argv.includes('--labels-only');
 // Keep Raider.IO-only rows separate from Blizzard's connected-realm rankings.
 const RAIDER_IO_REALM_ID = 0xffffffff;
@@ -42,23 +46,25 @@ function timestamp(value) {
 }
 
 async function ensureHistoryCheckpointTable() {
-  await pool.query(`CREATE TABLE IF NOT EXISTS history_sync_checkpoints (
+  await pool.query(`CREATE TABLE IF NOT EXISTS history_sync_rio_coverage (
     region VARCHAR(8) NOT NULL,
     season_id INT UNSIGNED NOT NULL,
     dungeon_id INT UNSIGNED NOT NULL,
     dungeon VARCHAR(160) NOT NULL,
     status VARCHAR(16) NOT NULL,
     last_page SMALLINT UNSIGNED NULL,
+    max_page SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (region, season_id, dungeon_id)
   ) ENGINE=InnoDB`);
 }
 
-async function setHistoryCheckpoint(region, seasonId, dungeonId, dungeon, status, lastPage = null) {
+async function setRioCoverageCheckpoint(region, seasonId, dungeonId, dungeon, status, lastPage = null) {
   await pool.execute(
-    `INSERT INTO history_sync_checkpoints (region, season_id, dungeon_id, dungeon, status, last_page)
-     VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE dungeon=VALUES(dungeon), status=VALUES(status), last_page=VALUES(last_page)`,
-    [region, seasonId, dungeonId, dungeon, status, lastPage]
+    `INSERT INTO history_sync_rio_coverage (region, season_id, dungeon_id, dungeon, status, last_page, max_page)
+     VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE dungeon=VALUES(dungeon), status=VALUES(status),
+       last_page=VALUES(last_page), max_page=VALUES(max_page), updated_at=CURRENT_TIMESTAMP`,
+    [region, seasonId, dungeonId, dungeon, status, lastPage, MAX_RIO_PAGE]
   );
 }
 
@@ -264,36 +270,29 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
     const dungeonKey = dungeon.slug || dungeon.name;
     const dungeonId = dungeonIdFor(dungeonName);
     const [checkpointRows] = await pool.execute(
-      'SELECT status FROM history_sync_checkpoints WHERE region = ? AND season_id = ? AND dungeon_id = ?',
+      'SELECT status, last_page, max_page FROM history_sync_rio_coverage WHERE region = ? AND season_id = ? AND dungeon_id = ?',
       [region, season.id, dungeonId]
     );
-    if (checkpointRows[0]?.status === 'complete') {
+    const coverage = checkpointRows[0];
+    const exhaustedAvailablePages = coverage?.status === 'complete'
+      && Number(coverage.last_page) < Number(coverage.max_page);
+    const scannedConfiguredLimit = coverage?.status === 'complete'
+      && Number(coverage.max_page) >= MAX_RIO_PAGE;
+    if (exhaustedAvailablePages || scannedConfiguredLimit) {
       skippedScans += 1;
-      console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; a completed scan is already checkpointed.`);
+      console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; Raider.IO coverage is complete through page ${coverage.last_page} (limit ${coverage.max_page}).`);
       return;
     }
-    if (!checkpointRows.length) {
-      // Earlier importer versions saved runs only after an entire dungeon scan
-      // succeeded. Existing rows therefore let us preserve that completed work.
-      const [existingRows] = await pool.execute(
-        `SELECT COUNT(*) AS row_count FROM weekly_leaderboard_runs
-         WHERE region = ? AND connected_realm_id = ? AND season_id = ? AND dungeon_id = ?`,
-        [region, RAIDER_IO_REALM_ID, season.id, dungeonId]
-      );
-      if (Number(existingRows[0]?.row_count) > 0) {
-        skippedScans += 1;
-        await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'complete', null);
-        console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: skipping; existing imported rows came from a completed earlier scan.`);
-        return;
-      }
-    }
-    await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'running', null);
+    // This separate coverage checkpoint deliberately ignores old 100-page
+    // checkpoints so the access-key run can fill the previously unscanned pages.
+    await setRioCoverageCheckpoint(region, season.id, dungeonId, dungeonName, 'running', null);
     const dungeonStartedAt = Date.now();
     let pagesLoaded = 0;
     let reachedPageCap = true;
     let dungeonReceived = 0;
     let dungeonAssigned = 0;
     let failedPage = null;
+    let lastSuccessfulPage = -1;
     console.log(`[history] ${region.toUpperCase()} ${season.name}: dungeon ${dungeonName} (${dungeonIndex + 1}/${dungeons.length}), pages 0-${MAX_RIO_PAGE}.`);
 
     for (let page = 0; page <= MAX_RIO_PAGE; page += 1) {
@@ -312,9 +311,11 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       }
       if (!entries.length) {
         reachedPageCap = false;
+        lastSuccessfulPage = page;
         console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: page ${page} is empty; pagination complete.`);
         break;
       }
+      lastSuccessfulPage = page;
       pagesLoaded += 1;
       received += entries.length;
       dungeonReceived += entries.length;
@@ -340,7 +341,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
         console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: through page ${page}/${MAX_RIO_PAGE}; ${dungeonReceived} API rows and ${dungeonAssigned} assigned to periods.`);
       }
       if ((page + 1) % 10 === 0 || page === MAX_RIO_PAGE) {
-        await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, 'running', page);
+        await setRioCoverageCheckpoint(region, season.id, dungeonId, dungeonName, 'running', page);
       }
       if (requestDelay) await sleep(requestDelay);
     }
@@ -369,7 +370,7 @@ async function importSeasonRegion(region, season, rioSeason, periodWindows) {
       }
       dungeonSaved += values.length;
     }
-    await setHistoryCheckpoint(region, season.id, dungeonId, dungeonName, failedPage ? 'incomplete' : 'complete', pagesLoaded ? pagesLoaded - 1 : null);
+    await setRioCoverageCheckpoint(region, season.id, dungeonId, dungeonName, failedPage ? 'incomplete' : 'complete', lastSuccessfulPage);
     persisted += dungeonSaved;
     console.log(`[history] ${region.toUpperCase()} ${season.name} / ${dungeonName}: ${failedPage ? `partial scan stopped at page ${failedPage.page}` : 'finished scan'}; loaded ${pagesLoaded} page(s), saved ${dungeonSaved} run(s) in ${Math.round((Date.now() - dungeonStartedAt) / 1000)}s.`);
   };
@@ -394,9 +395,9 @@ try {
     await ensureHistoryCheckpointTable();
     await ensureBlizzardHistoryTables(pool);
   }
-  console.log(`[history] Period labels/windows will come from Blizzard. US, EU, TW and KR runs will be collected from every connected-realm leaderboard; CN will use Raider.IO's historical run feed.`);
-  console.log(`[history] Blizzard history caps saved data at 2,000 deduplicated runs per region and period. Use BLIZZARD_HISTORY_CONCURRENCY and BLIZZARD_HISTORY_REQUEST_DELAY_MS to adjust request pacing.`);
-  console.log(`[history] CN Raider.IO pagination: page 0 through ${MAX_RIO_PAGE} per dungeon/region/season; global header-aware request pacing, ${requestDelay}ms extra per-worker pause, and ${rioConcurrency} concurrent dungeon scans.`);
+  console.log(`[history] Period labels/windows come from Blizzard. US, EU, TW and KR also scan every available connected-realm leaderboard; Raider.IO run pages are imported for all regions to fill additional gaps.`);
+  console.log(`[history] The final dataset is capped at 2,000 deduplicated runs per region/period. Blizzard scans use BLIZZARD_HISTORY_CONCURRENCY and BLIZZARD_HISTORY_REQUEST_DELAY_MS.`);
+  console.log(`[history] Raider.IO will scan page 0 through ${MAX_RIO_PAGE} per dungeon/region/season (${MAX_RIO_PAGE + 1} pages maximum${process.env.RIO_API_KEY ? ', access key detected' : ', no access key detected'}); global header-aware pacing, ${requestDelay}ms extra delay, ${rioConcurrency} concurrent dungeon scans.`);
 
   const rioSeasons = await loadRaiderIoSeasons();
   const regionData = new Map();
@@ -424,7 +425,6 @@ try {
         totalRuns += result.savedRuns;
         failedScans += result.failedBoards;
         skippedCompletedPeriods += result.skippedPeriods;
-        continue;
       }
       for (const [seasonIndex, season] of data.seasons.entries()) {
         const rioSeason = rioSeasons.get(season.id);
@@ -433,14 +433,14 @@ try {
           console.warn(`[history] ${region.toUpperCase()}: Blizzard season ${season.id} (${season.name}) has no matching Raider.IO season metadata; periods are saved, but runs are skipped.`);
           continue;
         }
-        console.log(`[history] ${region.toUpperCase()}: season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, Raider.IO ${rioSeason.slug}.`);
+        console.log(`[history] ${region.toUpperCase()}: Raider.IO season ${seasonIndex + 1}/${data.seasons.length}, Blizzard ${season.id} = ${season.name}, slug ${rioSeason.slug}.`);
         const result = await importSeasonRegion(region, season, rioSeason, data.periods);
         totalRuns += result.runs;
         failedScans += result.failedScans;
         skippedCompletedPeriods += result.skippedScans;
         for (const periodId of season.periodIds) {
           const capped = await capHistoryPeriod(pool, region, season.id, periodId);
-          console.log(`[history] CN ${season.name} period ${periodId}: retained ${capped} top run(s) after the region/period cap.`);
+          console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: retained ${capped} top run(s) after combining sources and applying the region/period cap.`);
         }
       }
     }
