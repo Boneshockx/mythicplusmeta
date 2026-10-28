@@ -273,6 +273,8 @@ async function importPeriod({ pool, region, season, periodId, realms, dungeons, 
 
   let fetchedBoards = 0;
   let failedBoards = 0;
+  let leaderboardGroups = 0;
+  let timedGroups = 0;
   for (let offset = 0; offset < pending.length; offset += PROGRESS_BATCH_SIZE) {
     const batch = pending.slice(offset, offset + PROGRESS_BATCH_SIZE);
     let next = 0;
@@ -285,9 +287,12 @@ async function importPeriod({ pool, region, season, periodId, realms, dungeons, 
         try {
           const leaderboard = await blizzardData(region,
             `/data/wow/connected-realm/${board.realmId}/mythic-leaderboard/${board.dungeonId}/period/${periodId}`);
-          for (const group of leaderboard?.leading_groups || []) {
+          const groups = leaderboard?.leading_groups || [];
+          leaderboardGroups += groups.length;
+          for (const group of groups) {
             const candidate = candidateFromGroup(group, { region, periodId, dungeon: board.dungeon, realmId: board.realmId });
             if (candidate) {
+              timedGroups += 1;
               candidate.seasonId = season.id;
               imported.push(candidate);
             }
@@ -306,7 +311,7 @@ async function importPeriod({ pool, region, season, periodId, realms, dungeons, 
     addAndTrim(candidateMap, imported);
     await saveBatch(pool, region, season.id, periodId, [...candidateMap.values()], outcomes);
     const completedCount = completed.size + offset + batch.length;
-    console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: checked ${Math.min(completedCount, boards.length)}/${boards.length} realm/dungeon boards; ${candidateMap.size} unique top-run candidates retained; ${failedBoards} board request(s) failed so far.`);
+    console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: checked ${Math.min(completedCount, boards.length)}/${boards.length} realm/dungeon boards; ${timedGroups}/${leaderboardGroups} leaderboard groups passed the timed-run filter; ${candidateMap.size} unique top-run candidates retained; ${failedBoards} board request(s) failed so far.`);
   }
 
   const [failedRows] = await pool.execute(
@@ -324,7 +329,7 @@ async function importPeriod({ pool, region, season, periodId, realms, dungeons, 
   }
 
   const saved = await finalizePeriod(pool, region, season.id, periodId, [...candidateMap.values()]);
-  console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: finished all ${boards.length} boards and saved ${saved} deduplicated runs.`);
+  console.log(`[history] ${region.toUpperCase()} ${season.name} period ${periodId}: finished all ${boards.length} boards; ${timedGroups}/${leaderboardGroups} leaderboard groups passed the timed-run filter; saved ${saved} deduplicated runs.`);
   return { saved, failed: 0, skipped: 0 };
 }
 

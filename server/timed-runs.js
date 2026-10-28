@@ -4,6 +4,11 @@ function positiveNumber(value) {
 }
 
 function milliseconds(value, unit = 'ms') {
+  if (value && typeof value === 'object') {
+    if (value.milliseconds != null) return milliseconds(value.milliseconds, 'ms');
+    if (value.seconds != null) return milliseconds(value.seconds, 'seconds');
+    if (value.value != null) return milliseconds(value.value, unit);
+  }
   if (typeof value === 'string' && /^\d+:\d{2}(?:\.\d+)?$/.test(value.trim())) {
     const [minutes, seconds] = value.trim().split(':').map(Number);
     return Math.round((minutes * 60 + seconds) * 1000);
@@ -21,11 +26,11 @@ export function dungeonTimeLimitMs(dungeon) {
     const value = milliseconds(dungeon[key]);
     if (value) return value;
   }
-  for (const key of ['time_limit_seconds', 'keystone_time_limit_seconds']) {
+  for (const key of ['time_limit_seconds', 'keystone_time_limit_seconds', 'time_limit_sec', 'timeLimitSeconds']) {
     const value = milliseconds(dungeon[key], 'seconds');
     if (value) return value;
   }
-  for (const key of ['time_limit', 'keystone_time_limit']) {
+  for (const key of ['time_limit', 'keystone_time_limit', 'timeLimit', 'keystone_timer']) {
     const value = milliseconds(dungeon[key]);
     if (value) return value;
   }
@@ -56,9 +61,14 @@ function explicitTimedStatus(value) {
 }
 
 export function isTimedLeaderboardGroup(group, timeLimitMs) {
-  const explicit = explicitTimedStatus(group || {});
-  if (explicit !== null) return explicit;
-  const duration = milliseconds(group?.duration ?? group?.clear_time_ms ?? group?.clearTimeMs);
+  const value = group || {};
+  for (const key of ['timed', 'is_timed', 'isTimed']) {
+    if (typeof value[key] === 'boolean') return value[key];
+  }
+  const duration = milliseconds(value.duration ?? value.clear_time_ms ?? value.clearTimeMs ?? value.clear_time ?? value.clear_time_seconds, value.clear_time_seconds != null ? 'seconds' : 'ms');
   const limit = positiveNumber(timeLimitMs);
-  return Boolean(duration && limit && duration <= limit);
+  if (duration && limit) return duration <= limit;
+  // Some API payloads expose chest/upgrade counts instead of a duration.
+  // Use those only when the authoritative duration comparison is unavailable.
+  return explicitTimedStatus(value);
 }
